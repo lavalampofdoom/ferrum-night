@@ -1,8 +1,12 @@
-import { copyFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 
 const origin = "https://lavalampofdoom.github.io/ferrum-night";
 
 copyFileSync("dist-pages/index.html", "dist-pages/404.html");
+mkdirSync("dist-pages/play", { recursive: true });
+mkdirSync("dist-pages/guide", { recursive: true });
+copyFileSync("dist-pages/index.html", "dist-pages/play/index.html");
+copyFileSync("dist-pages/index.html", "dist-pages/guide/index.html");
 writeFileSync("dist-pages/.nojekyll", "");
 writeFileSync(
   "dist-pages/robots.txt",
