@@ -1,0 +1,64 @@
+import type { Slot } from "./items";
+
+export const SAVE_VERSION = 1;
+const KEY = "ferrum-night-save";
+const BACK = "ferrum-night-save-bak";
+
+export type SaveData = {
+  version: number;
+  x: number;
+  y: number;
+  hp: number;
+  infection: number;
+  weapon: string;
+  armor: string;
+  inv: Slot[];
+  claimed: string[];
+  chests: Record<string, Slot[]>;
+  searched: string[];
+  chopped: number[];
+  deadZ: number[];
+  interior: string | null;
+};
+
+export function loadSave(): SaveData | null {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as SaveData;
+    if (!s || typeof s !== "object") return null;
+    if (s.version !== SAVE_VERSION) return migrate(s);
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+function migrate(s: SaveData): SaveData {
+  s.version = SAVE_VERSION;
+  s.inv ??= [];
+  s.claimed ??= [];
+  s.chests ??= {};
+  s.searched ??= [];
+  s.chopped ??= [];
+  s.deadZ ??= [];
+  return s;
+}
+
+export function writeSave(data: SaveData) {
+  try {
+    const prev = localStorage.getItem(KEY);
+    if (prev) localStorage.setItem(BACK, prev);
+    localStorage.setItem(KEY, JSON.stringify(data));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+export function clearSave() {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* ignore */
+  }
+}

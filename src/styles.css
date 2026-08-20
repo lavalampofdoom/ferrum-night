@@ -1,0 +1,68 @@
+@import "tailwindcss";
+@source "./**/*.{ts,tsx}";
+@source "../site/**/*.{html,tsx}";
+
+@theme {
+  --color-bg: #0b0c0a;
+  --color-surface: #141612;
+  --color-raised: #1c1f18;
+  --color-fg: #e6e1d0;
+  --color-muted: #8e8876;
+  --color-faint: #5c574c;
+  --color-border: #2a2d24;
+  --color-accent: #c9c3b0;
+  --color-accent-fg: #0b0c0a;
+  --color-health: #a33b34;
+  --color-infect: #6a8a4e;
+  --color-warn: #c4a15a;
+  --font-display: "Pixelify Sans", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    min-height: 100%;
+  }
+
+  html {
+    background: var(--color-bg);
+    color: var(--color-fg);
+  }
+
+  body {
+    margin: 0;
+    overflow-x: hidden;
+    font-family: var(--font-sans);
+    background: var(--color-bg);
+    color: var(--color-fg);
+  }
+
+  html.play-lock,
+  html.play-lock body {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
