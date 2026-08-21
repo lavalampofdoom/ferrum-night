@@ -98,12 +98,13 @@ export function GuidePage() {
         <section className="mt-12" id="firearms">
           <h2 className="font-display text-2xl">Firearms</h2>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-            A baseball bat still drops a walker in two to four swings. Guns are loot — civic offices,
-            Lowe's, and campus hide the rare ones. Craft matching ammo at a bench. Paintball
-            markers never kill at range; they stain and stun. Jam the marker into a walker to hurt them.
+            A baseball bat still drops a walker in two to four swings. Guns are rare in
+            furniture — civic offices, Lowe's, and campus hide the lucky ones. Craft matching ammo
+            at a bench. Paintball markers never kill at range; they stain and stun. Jam the marker
+            into a walker to hurt them.
           </p>
           <dl className="mt-4 grid gap-2 sm:grid-cols-2">
-            <Row k="9mm / 1911" v="Sidearms. 9mm is common in houses; the .45 hits harder." />
+            <Row k="9mm / 1911" v="Sidearms. Rare in houses; the .45 hits harder." />
             <Row k="12ga / 20ga" v="Pump for reach. Sawed-off 20 gauge is a room broom." />
             <Row k="AR-15 / 7.62" v="5.56 with a holo for volume. Bolt 7.62 for the long shot — and the bear." />
             <Row k="Bow / paintball" v="Bow is silent. Paintball is nonlethal unless you are standing on them." />
@@ -121,6 +122,12 @@ export function GuidePage() {
 
         <section className="mt-12" id="craft">
           <h2 className="font-display text-2xl">Crafting</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
+            Hand recipes from the pack: hatchet, bat, hoodie, arrows, and a crafting table (8 wood,
+            3 scrap). Place the table inside a building. The only standing bench is at 180 Ferrum
+            Mountain Road. Bench recipes cover blades, armor, ammo, medkits, and antibiotics.
+            Standing next to a bench does not freeze you — open the pack to use it.
+          </p>
           <ul className="mt-4 space-y-2">
             {RECIPES.map((r) => {
               const need = Object.entries(r.needs)
@@ -145,10 +152,13 @@ export function GuidePage() {
           <h2 className="font-display text-2xl">Controls</h2>
           <dl className="mt-4 grid gap-2 sm:grid-cols-2">
             <Row k="WASD" v="Walk. Shift sprints. Faster on asphalt, slower in woods and crops." />
-            <Row k="E" v="Enter, search, sleep, claim, use a bench." />
-            <Row k="Space" v="Melee or fire. Bat drops a walker in 2–4 hits. Guns need matching ammo." />
-            <Row k="I" v="Open the pack and craft." />
-            <Row k="Touch" v="Left pad to move. Use / attack on the right." />
+            <Row k="E" v="Hand: enter, search, sleep, claim, lock, enter a car, use a bench." />
+            <Row k="Space" v="Strike. Bat drops a walker in 2–4 hits. Guns need matching ammo." />
+            <Row k="I" v="Open the pack (backpack). Craft by hand, or all recipes at a bench." />
+            <Row k="Touch" v="Left pad to move. Hand / knife / backpack on the right." />
+            <Row k="Locks" v="Some houses start locked. Bash the door. Lock or unlock from inside if the door still exists." />
+            <Row k="Walkers inside" v="Some houses hide 1–5 walkers. Unlocked doors let more in. Broken doors are faster." />
+            <Row k="Cars" v="E enter. W/S drive, A/D steer. ~2 min of gas. Ram walkers. Safe inside. Refill with a gas can." />
             <Row k="Ground" v="Roads are quick and marked. Forest and tall grass drag. Water and walls stop you. Tree trunks are solid." />
             <Row k="Walkers" v="Normal bites take seven hits to drop you. Rare brutes take two. Keep a bat or a door between you." />
             <Row k="Fever" v="Bites infect. Antibiotics at the clinic stop the turn." />

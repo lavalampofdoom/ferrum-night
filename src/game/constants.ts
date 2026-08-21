@@ -25,6 +25,11 @@ export const SOLID_CELL = 64;
 export const BEAR_RADIUS = 20;
 export const CUB_RADIUS = 13;
 
+export const CAR_SPEED = 208;
+export const CAR_RADIUS = 16;
+export const CAR_GAS = 120;
+export const DOOR_HP = 100;
+
 export const INFECTION_TIME = 180;
 
 export const T = {

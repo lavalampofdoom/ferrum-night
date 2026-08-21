@@ -1,6 +1,6 @@
 import { loadAssets, type Assets } from "./assets";
 import { GameAudio } from "./audio";
-import { FIXED_DT, MAX_FRAME_DT } from "./constants";
+import { CAR_GAS, FIXED_DT, MAX_FRAME_DT } from "./constants";
 import { Input, radialDeadzone } from "./input";
 import { craft, RECIPES } from "./items";
 import { cameraFor, drawFrame, drawMinimap } from "./render";
@@ -8,6 +8,7 @@ import { clearSave, loadSave, writeSave } from "./save";
 import {
   applySave,
   createState,
+  currentCar,
   snapshotSave,
   stepParticles,
   stepSim,
@@ -28,7 +29,8 @@ export type ControlsProbe = {
 declare global {
   interface Window {
     __controlsTest?: ControlsProbe;
-    __ferrum?: { start: () => void; pause: () => void };
+    __ferrum?: { start: () => void; pause: () => void; inspect?: () => unknown };
+
   }
 }
 
@@ -224,6 +226,7 @@ export class Engine {
     const b = this.state.interior
       ? this.state.world.buildings.find((x) => x.id === this.state!.interior!.buildingId)
       : null;
+    const car = currentCar(this.state);
     useHud.getState().set({
       hp: p.hp,
       maxHp: p.maxHp,
@@ -241,13 +244,22 @@ export class Engine {
       buildingName: b?.name ?? "",
       toast: this.state.toast,
       time: this.state.time,
+      inCar: this.state.carId != null,
+      gas: car?.gas ?? 0,
+      gasMax: CAR_GAS,
     });
   }
 
   private wireControlsTest() {
     window.__controlsTest = {
-      getYaw: () => 0,
+      getYaw: () => {
+        const s = this.state;
+        if (!s || s.carId == null) return 0;
+        return currentCar(s)?.ang ?? 0;
+      },
       getSpeed: () => {
+        const s = this.state;
+        if (s?.carId != null) return s.player.moving ? 1 : 0;
         const a = this.input.actions;
         return Math.hypot(a.moveX, a.moveY);
       },
@@ -258,6 +270,27 @@ export class Engine {
     window.__ferrum = {
       start: () => this.start(),
       pause: () => this.pauseToggle(),
+      inspect: () => {
+        const s = this.state;
+        if (!s) return null;
+        const benches = s.interior?.furniture.filter((f) => f.kind === "bench").map((f) => f.label) ?? [];
+        return {
+          x: s.player.x,
+          y: s.player.y,
+          interior: s.interior?.buildingId ?? null,
+          atBench: s.atBench,
+          carId: s.carId,
+          cars: s.world.cars.length,
+          locked: s.world.buildings.filter((b) => b.locked).length,
+          houses: s.world.buildings.filter((b) => b.kind === "house" || b.kind === "ranch").length,
+          indoorZ: s.world.zombies.filter((z) => z.inside).length,
+          indoorHouses: new Set(s.world.zombies.filter((z) => z.inside).map((z) => z.inside)).size,
+          clinicLocked: s.world.buildings.find((b) => b.id === "clinic")?.locked ?? null,
+          furn: s.interior?.furniture.map((f) => `${f.kind}:${f.look ?? ""}:${f.label}`) ?? [],
+          benches,
+          hint: s.hint,
+        };
+      },
     };
   }
 }

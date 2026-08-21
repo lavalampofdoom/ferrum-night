@@ -2,6 +2,9 @@ import {
   BEAR_RADIUS,
   BRUTE_RADIUS,
   BRUTE_SPEED,
+  CAR_GAS,
+  CAR_RADIUS,
+  CAR_SPEED,
   CUB_RADIUS,
   INFECTION_TIME,
   MAP_H,
@@ -25,7 +28,9 @@ import {
   solidHit,
   tileAt,
   type Building,
+  type Car,
   type Critter,
+  type Interact,
   type Interior,
   type World,
   type Zombie,
@@ -95,6 +100,8 @@ export type GameState = {
   toast: string;
   toastT: number;
   atBench: boolean;
+  carId: number | null;
+  placedBenches: Record<string, { x: number; y: number }[]>;
 };
 
 const FACE_VEC = [
@@ -143,7 +150,14 @@ export function createState(world: World, rng = mulberry32(40)): GameState {
     toast: "",
     toastT: 0,
     atBench: false,
+    carId: null,
+    placedBenches: {},
   };
+}
+
+export function currentCar(s: GameState): Car | null {
+  if (s.carId == null) return null;
+  return s.world.cars.find((c) => c.id === s.carId) ?? null;
 }
 
 export function stepSim(s: GameState, a: Actions, dt: number) {
@@ -171,13 +185,16 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
     }
   }
 
+  const inCar = s.carId != null;
   const mapW = s.interior ? s.interior.w * TILE : MAP_W * TILE;
   const mapH = s.interior ? s.interior.h * TILE : MAP_H * TILE;
   const blocked = s.interior ? s.interior.blocked : s.world.blocked;
   const tiles = s.interior ? s.interior.tiles : s.world.tiles;
   const bw = s.interior ? s.interior.w : MAP_W;
 
-  if (!s.atBench) {
+  if (inCar && !s.interior) {
+    driveCar(s, a, dt);
+  } else {
     const ground = tileSpeed(tileAt(tiles, p.x, p.y, bw));
     const spd = (a.sprint ? PLAYER_SPRINT : PLAYER_SPEED) * ground;
     const mx = a.moveX * spd * dt;
@@ -188,43 +205,67 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
       if (Math.abs(mx) > Math.abs(my)) p.facing = mx < 0 ? 1 : 2;
       else p.facing = my < 0 ? 3 : 0;
     }
-    tryMove(p, blocked, bw, mx, my, mapW, mapH, s.interior ? undefined : s.world, PLAYER_RADIUS);
+    tryMove(p, blocked, bw, mx, my, mapW, mapH, s.interior ? undefined : s.world, PLAYER_RADIUS, s.carId);
     const dist = Math.hypot(p.x - ox, p.y - oy);
     p.moving = dist > 0.2;
     if (p.moving) p.walk += dist * 0.14;
-  } else {
-    p.moving = false;
   }
 
   s.atBench = false;
   s.hint = "";
 
-  const nearB = !s.interior ? nearestBuilding(s, 46) : null;
-  if (nearB && !s.interior) {
-    s.hint = `Enter ${nearB.name}`;
-    if (a.justUse) enterBuilding(s, nearB);
-  }
+  if (!s.interior && inCar) {
+    const car = currentCar(s);
+    s.hint = !car || car.gas <= 1 ? "Out of gas · E exit" : "W/S drive · A/D steer · E exit";
+    if (a.justUse) exitCar(s);
+  } else if (!s.interior && !inCar) {
+    const nearCar = nearestCar(s, 30);
+    const nearB = nearestBuilding(s, 46);
+    const carCloser =
+      nearCar && (!nearB || Math.hypot(nearCar.x - p.x, nearCar.y - p.y) <= Math.hypot(nearB.doorX - p.x, nearB.doorY - p.y));
+    if (nearCar && carCloser) {
+      s.hint = nearCar.gas <= 1 ? "Empty car — needs gas" : "Enter car";
+      if (a.justUse) {
+        s.carId = nearCar.id;
+        p.x = nearCar.x;
+        p.y = nearCar.y;
+        toast(s, "Engine turns.");
+      }
+    } else if (nearB) {
+      if (nearB.locked && !nearB.doorBroken) {
+        s.hint = "Door locked — bash it";
+        if (a.justAttack && p.attackT <= 0) bashDoor(s, nearB);
+      } else {
+        s.hint = nearB.doorBroken ? `Enter ${nearB.name} (door gone)` : `Enter ${nearB.name}`;
+        if (a.justUse) enterBuilding(s, nearB);
+      }
+    }
 
-  const nearTree = !s.interior ? nearestTree(s, 28) : null;
-  if (nearTree && !nearB) {
-    const wep = ITEMS[p.weapon];
-    s.hint = wep?.tool === "chop" ? "Chop tree" : "Need a hatchet or axe";
-    if (a.justUse && wep?.tool === "chop") {
-      nearTree.hp -= wep.chop ?? 1;
-      burst(s, nearTree.x, nearTree.y, "#6b4a2b", 8);
-      if (nearTree.hp <= 0) {
-        nearTree.chopped = true;
-        addItem(p.inv, "wood", 3 + Math.floor(s.rng() * 4));
-        toast(s, "Wood gathered.");
+    const nearTree = nearestTree(s, 28);
+    if (nearTree && !nearB && !nearCar) {
+      const wep = ITEMS[p.weapon];
+      s.hint = wep?.tool === "chop" ? "Chop tree" : "Need a hatchet or axe";
+      if (a.justUse && wep?.tool === "chop") {
+        nearTree.hp -= wep.chop ?? 1;
+        burst(s, nearTree.x, nearTree.y, "#6b4a2b", 8);
+        if (nearTree.hp <= 0) {
+          nearTree.chopped = true;
+          addItem(p.inv, "wood", 3 + Math.floor(s.rng() * 4));
+          toast(s, "Wood gathered.");
+        }
       }
     }
   }
 
   if (s.interior) {
-    s.atBench = false;
-    let closest: (typeof s.interior.furniture)[0] | null = null;
+    let closest: Interact | null = null;
     let cd = 40;
     for (const f of s.interior.furniture) {
+      if (f.kind === "lock") {
+        const bld = s.world.buildings.find((x) => x.id === s.interior?.buildingId);
+        if (!bld || bld.doorBroken) continue;
+        f.label = bld.locked ? "Unlock door" : "Lock door";
+      }
       const d = Math.hypot(f.x - p.x, f.y - p.y);
       if (d < cd) {
         cd = d;
@@ -233,18 +274,22 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
     }
     if (closest && cd < closest.r + 8) {
       if (closest.kind === "bench") s.atBench = true;
-      if (closest.kind === "claim" && s.claimed.has(s.interior.buildingId)) {
-        s.hint = "Your home";
-      } else s.hint = closest.label;
+      if (closest.kind === "claim" && s.claimed.has(s.interior.buildingId)) s.hint = "Your home";
+      else s.hint = closest.label;
       if (a.justUse) useFurniture(s, closest);
     }
   }
 
-  if (a.justAttack && p.attackT <= 0) doAttack(s);
+  const bashingLocked =
+    !s.interior &&
+    !inCar &&
+    !!nearestBuilding(s, 46)?.locked &&
+    !nearestBuilding(s, 46)?.doorBroken;
+  if (a.justAttack && p.attackT <= 0 && !bashingLocked && !inCar) doAttack(s);
 
   stepBullets(s, dt);
   stepWildlife(s, dt);
-  if (!s.interior) stepZombies(s, dt);
+  stepZombies(s, dt);
 
   if (p.hp <= 0) {
     s.dead = true;
@@ -262,12 +307,13 @@ function tryMove(
   mapH: number,
   world: World | undefined,
   radius: number,
+  skipCar: number | null = null,
 ) {
   const nx = Math.max(12, Math.min(mapW - 12, p.x + mx));
   const ny = Math.max(12, Math.min(mapH - 12, p.y + my));
-  const stuck = circleBlocked(blocked, bw, p.x, p.y, radius, world);
-  if (stuck || !circleBlocked(blocked, bw, nx, p.y, radius, world)) p.x = nx;
-  if (stuck || !circleBlocked(blocked, bw, p.x, ny, radius, world)) p.y = ny;
+  const stuck = circleBlocked(blocked, bw, p.x, p.y, radius, world, skipCar);
+  if (stuck || !circleBlocked(blocked, bw, nx, p.y, radius, world, skipCar)) p.x = nx;
+  if (stuck || !circleBlocked(blocked, bw, p.x, ny, radius, world, skipCar)) p.y = ny;
 }
 
 function circleBlocked(
@@ -277,6 +323,7 @@ function circleBlocked(
   y: number,
   r: number,
   world?: World,
+  skipCar: number | null = null,
 ): boolean {
   const pts: [number, number][] = [
     [x - r, y],
@@ -286,6 +333,12 @@ function circleBlocked(
   ];
   if (pts.some(([px, py]) => blockedAt(blocked, px, py, bw))) return true;
   if (world && solidHit(world, x, y, r)) return true;
+  if (world) {
+    for (const c of world.cars) {
+      if (c.id === skipCar) continue;
+      if (Math.hypot(c.x - x, c.y - y) < r + CAR_RADIUS) return true;
+    }
+  }
   return false;
 }
 
@@ -316,10 +369,117 @@ function nearestTree(s: GameState, r: number) {
   return best;
 }
 
+function nearestCar(s: GameState, r: number): Car | null {
+  let best: Car | null = null;
+  let d = r;
+  for (const c of s.world.cars) {
+    const dist = Math.hypot(c.x - s.player.x, c.y - s.player.y);
+    if (dist < d) {
+      d = dist;
+      best = c;
+    }
+  }
+  return best;
+}
+
+function driveCar(s: GameState, a: Actions, dt: number) {
+  const car = currentCar(s);
+  const p = s.player;
+  if (!car) {
+    s.carId = null;
+    return;
+  }
+  car.ang -= a.moveX * 2.6 * dt;
+  const thrust = -a.moveY;
+  const empty = car.gas <= 0;
+  const t = empty ? 0 : thrust;
+  if (Math.abs(t) > 0.08) car.gas = Math.max(0, car.gas - dt);
+  const ground = tileSpeed(tileAt(s.world.tiles, car.x, car.y));
+  const spd = CAR_SPEED * Math.max(0.55, ground) * t;
+  const mx = Math.sin(car.ang) * spd * dt;
+  const my = Math.cos(car.ang) * spd * dt;
+  const ox = car.x;
+  const oy = car.y;
+  tryMove(car, s.world.blocked, MAP_W, mx, my, MAP_W * TILE, MAP_H * TILE, s.world, CAR_RADIUS, car.id);
+  p.x = car.x;
+  p.y = car.y;
+  p.moving = Math.hypot(car.x - ox, car.y - oy) > 0.4;
+  if (p.moving) {
+    p.walk += 0.2;
+    const ax = car.x - ox;
+    const ay = car.y - oy;
+    if (Math.abs(ax) > Math.abs(ay)) p.facing = ax < 0 ? 1 : 2;
+    else p.facing = ay < 0 ? 3 : 0;
+  }
+  if (empty && Math.abs(thrust) > 0.2 && s.toastT <= 0) toast(s, "Out of gas.");
+  ramZombies(s, car, Math.hypot(car.x - ox, car.y - oy) / dt);
+}
+
+function ramZombies(s: GameState, car: Car, speed: number) {
+  if (speed < 70) return;
+  for (const z of s.world.zombies) {
+    if (!z.alive || z.inside) continue;
+    if (Math.hypot(z.x - car.x, z.y - car.y) < CAR_RADIUS + zombieRadius(z) + 6) {
+      hurtZombie(s, z, z.brute ? 55 : 120);
+      z.x += Math.sin(car.ang) * 18;
+      z.y += Math.cos(car.ang) * 18;
+      s.shake = 0.18;
+    }
+  }
+}
+
+function exitCar(s: GameState) {
+  const car = currentCar(s);
+  s.carId = null;
+  if (car) {
+    s.player.x = car.x + Math.cos(car.ang) * 22;
+    s.player.y = car.y - Math.sin(car.ang) * 22;
+  }
+  toast(s, "You step out.");
+}
+
+function bashDoor(s: GameState, b: Building) {
+  const p = s.player;
+  const wep = ITEMS[p.weapon] ?? ITEMS.fists!;
+  p.attackT = wep.rate ?? 0.45;
+  const pry = wep.tool === "pry" ? 1.8 : 1;
+  const dmg = (wep.dmg ?? 6) * pry;
+  b.doorHp -= dmg;
+  burst(s, b.doorX, b.doorY, "#6b5344", 8);
+  s.shake = 0.12;
+  if (b.doorHp <= 0) {
+    b.doorHp = 0;
+    b.doorBroken = true;
+    b.locked = false;
+    toast(s, "The door gives.");
+  } else {
+    toast(s, "The lock holds.");
+  }
+}
+
+function attachBenches(s: GameState, interior: Interior) {
+  const extra = s.placedBenches[interior.buildingId];
+  if (!extra) return;
+  for (let i = 0; i < extra.length; i++) {
+    const e = extra[i]!;
+    interior.furniture.push({
+      id: `${interior.buildingId}-placed-bench-${i}`,
+      kind: "bench",
+      x: e.x,
+      y: e.y,
+      r: 24,
+      label: "Crafting bench",
+      look: "bench",
+    });
+  }
+}
+
 function enterBuilding(s: GameState, b: Building) {
+  if (b.locked && !b.doorBroken) return;
   s.returnX = s.player.x;
   s.returnY = s.player.y;
   s.interior = buildInterior(b, s.rng);
+  attachBenches(s, s.interior);
   s.player.x = s.interior.spawnX;
   s.player.y = s.interior.spawnY;
   toast(s, b.name);
@@ -333,11 +493,26 @@ export function leaveBuilding(s: GameState) {
   s.atBench = false;
 }
 
-function useFurniture(s: GameState, f: { id: string; kind: string; x: number; y: number; searched?: boolean }) {
+function lootTableFor(b: Building | undefined): string {
+  if (!b) return "house";
+  if (b.zone === "rural" && (b.kind === "house" || b.kind === "ranch")) return "farm";
+  return b.lootTable ?? "house";
+}
+
+function useFurniture(s: GameState, f: Interact) {
   const p = s.player;
   const b = s.world.buildings.find((x) => x.id === s.interior?.buildingId);
   if (f.kind === "door") {
     leaveBuilding(s);
+    return;
+  }
+  if (f.kind === "lock") {
+    if (!b || b.doorBroken) {
+      toast(s, "The door is gone.");
+      return;
+    }
+    b.locked = !b.locked;
+    toast(s, b.locked ? "Door locked." : "Door unlocked.");
     return;
   }
   if (f.kind === "claim" && b) {
@@ -358,6 +533,7 @@ function useFurniture(s: GameState, f: { id: string; kind: string; x: number; y:
   }
   if (f.kind === "bench") {
     s.atBench = true;
+    toast(s, "Workbench — open the pack to craft.");
     return;
   }
   if (f.kind === "chest") {
@@ -370,8 +546,13 @@ function useFurniture(s: GameState, f: { id: string; kind: string; x: number; y:
       return;
     }
     s.searched.add(f.id);
-    const table = b?.lootTable ?? "house";
+    const table = lootTableFor(b);
     const loot = rollLoot(table, s.rng, 2 + Math.floor(s.rng() * 2));
+    if (table === "farm" && /crate/i.test(f.label) && s.rng() < 0.42) {
+      const existing = loot.find((l) => l.id === "hatchet");
+      if (existing) existing.n += 1;
+      else loot.push({ id: "hatchet", n: 1 });
+    }
     const names: string[] = [];
     for (const l of loot) {
       addItem(p.inv, l.id, l.n);
@@ -381,28 +562,65 @@ function useFurniture(s: GameState, f: { id: string; kind: string; x: number; y:
   }
 }
 
+function placeWorkbench(s: GameState) {
+  if (!s.interior) {
+    toast(s, "Place it inside a building.");
+    return;
+  }
+  if (!takeItem(s.player.inv, "workbench", 1)) return;
+  const x = s.player.x;
+  const y = s.player.y - 12;
+  const list = s.placedBenches[s.interior.buildingId] ?? [];
+  list.push({ x, y });
+  s.placedBenches[s.interior.buildingId] = list;
+  s.interior.furniture.push({
+    id: `${s.interior.buildingId}-placed-bench-${list.length - 1}`,
+    kind: "bench",
+    x,
+    y,
+    r: 24,
+    label: "Crafting bench",
+  });
+  toast(s, "Crafting table set.");
+}
+
+function refillCar(s: GameState, amount: number) {
+  const car =
+    currentCar(s) ??
+    nearestCar(s, 36);
+  if (!car) {
+    toast(s, "No car close enough.");
+    return false;
+  }
+  car.gas = Math.min(CAR_GAS, car.gas + amount);
+  toast(s, "Tank topped off.");
+  return true;
+}
+
 function doAttack(s: GameState) {
   const p = s.player;
   const wep = ITEMS[p.weapon] ?? ITEMS.fists!;
   p.attackT = wep.rate ?? 0.45;
   const dir = FACE_VEC[p.facing] ?? FACE_VEC[0]!;
+  const zeds = activeZombies(s);
 
   if (wep.kind === "ranged") {
-    if (wep.nonlethal && wep.contact && !s.interior) {
+    if (wep.nonlethal && wep.contact) {
       let jammed = false;
       const reach = PLAYER_RADIUS + ZOMBIE_RADIUS + 4;
-      for (const z of s.world.zombies) {
-        if (!z.alive) continue;
+      for (const z of zeds) {
         if (Math.hypot(z.x - p.x, z.y - p.y) <= reach) {
           hurtZombie(s, z, wep.contact);
           jammed = true;
         }
       }
-      for (const c of s.world.critters) {
-        if (!c.alive) continue;
-        if (Math.hypot(c.x - p.x, c.y - p.y) <= reach + 4) {
-          hurtCritter(s, c, wep.contact);
-          jammed = true;
+      if (!s.interior) {
+        for (const c of s.world.critters) {
+          if (!c.alive) continue;
+          if (Math.hypot(c.x - p.x, c.y - p.y) <= reach + 4) {
+            hurtCritter(s, c, wep.contact);
+            jammed = true;
+          }
         }
       }
       if (jammed) {
@@ -446,20 +664,19 @@ function doAttack(s: GameState) {
 
   const range = wep.range ?? 28;
   let hit = false;
+  for (const z of zeds) {
+    const zR = z.brute ? BRUTE_RADIUS : ZOMBIE_RADIUS;
+    const dx = z.x - p.x;
+    const dy = z.y - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d > range + zR) continue;
+    const ndx = d ? dx / d : 0;
+    const ndy = d ? dy / d : 0;
+    if (ndx * dir.x + ndy * dir.y < 0.25 && d > 16) continue;
+    hurtZombie(s, z, wep.dmg ?? 8);
+    hit = true;
+  }
   if (!s.interior) {
-    for (const z of s.world.zombies) {
-      if (!z.alive) continue;
-      const zR = z.brute ? BRUTE_RADIUS : ZOMBIE_RADIUS;
-      const dx = z.x - p.x;
-      const dy = z.y - p.y;
-      const d = Math.hypot(dx, dy);
-      if (d > range + zR) continue;
-      const ndx = d ? dx / d : 0;
-      const ndy = d ? dy / d : 0;
-      if (ndx * dir.x + ndy * dir.y < 0.25 && d > 16) continue;
-      hurtZombie(s, z, wep.dmg ?? 8);
-      hit = true;
-    }
     for (const c of s.world.critters) {
       if (!c.alive) continue;
       const r = critterRadius(c);
@@ -478,6 +695,11 @@ function doAttack(s: GameState) {
     s.shake = 0.16;
     s.hitstop = 0.04;
   }
+}
+
+function activeZombies(s: GameState): Zombie[] {
+  const id = s.interior?.buildingId ?? null;
+  return s.world.zombies.filter((z) => z.alive && (id ? z.inside === id : !z.inside));
 }
 
 function hurtZombie(s: GameState, z: Zombie, dmg: number) {
@@ -534,6 +756,7 @@ function hurtCritter(s: GameState, c: Critter, dmg: number) {
 function stepBullets(s: GameState, dt: number) {
   const blocked = s.interior ? s.interior.blocked : s.world.blocked;
   const bw = s.interior ? s.interior.w : MAP_W;
+  const zeds = activeZombies(s);
   for (const b of s.bullets) {
     if (!b.alive) continue;
     b.life -= dt;
@@ -543,9 +766,7 @@ function stepBullets(s: GameState, dt: number) {
       b.alive = false;
       continue;
     }
-    if (s.interior) continue;
-    for (const z of s.world.zombies) {
-      if (!z.alive) continue;
+    for (const z of zeds) {
       const zR = z.brute ? BRUTE_RADIUS : ZOMBIE_RADIUS;
       if (Math.hypot(z.x - b.x, z.y - b.y) < zR + 4) {
         if (b.paint) paintZombie(s, z);
@@ -554,7 +775,7 @@ function stepBullets(s: GameState, dt: number) {
         break;
       }
     }
-    if (!b.alive) continue;
+    if (!b.alive || s.interior) continue;
     for (const c of s.world.critters) {
       if (!c.alive) continue;
       if (Math.hypot(c.x - b.x, c.y - b.y) < critterRadius(c) + 4) {
@@ -572,30 +793,73 @@ function zombieRadius(z: Zombie) {
 }
 
 function stepZombies(s: GameState, dt: number) {
+  if (s.interior) {
+    stepZombiesOn(
+      s,
+      dt,
+      s.world.zombies.filter((z) => z.alive && z.inside === s.interior!.buildingId),
+      s.interior.blocked,
+      s.interior.tiles,
+      s.interior.w,
+      s.interior.w * TILE,
+      s.interior.h * TILE,
+      undefined,
+      s.player.x,
+      s.player.y,
+      true,
+    );
+    breachInto(s, dt);
+  } else {
+    stepZombiesOn(
+      s,
+      dt,
+      s.world.zombies.filter((z) => z.alive && !z.inside),
+      s.world.blocked,
+      s.world.tiles,
+      MAP_W,
+      MAP_W * TILE,
+      MAP_H * TILE,
+      s.world,
+      s.player.x,
+      s.player.y,
+      false,
+    );
+  }
+}
+
+function stepZombiesOn(
+  s: GameState,
+  dt: number,
+  list: Zombie[],
+  blocked: Uint8Array,
+  tiles: Uint8Array,
+  bw: number,
+  mapW: number,
+  mapH: number,
+  world: World | undefined,
+  tx: number,
+  ty: number,
+  indoor: boolean,
+) {
   const p = s.player;
-  const blocked = s.world.blocked;
-  const tiles = s.world.tiles;
-  const world = s.world;
-  const mapW = MAP_W * TILE;
-  const mapH = MAP_H * TILE;
+  const invulnCar = s.carId != null && !indoor;
   let nearby = 0;
-  for (const z of s.world.zombies) {
-    if (!z.alive) continue;
+  for (const z of list) {
     z.hitT = Math.max(0, z.hitT - dt);
     z.attackCd = Math.max(0, z.attackCd - dt);
     if (z.paintT > 0) z.paintT = Math.max(0, z.paintT - dt);
-    const dx = p.x - z.x;
-    const dy = p.y - z.y;
+    const dx = tx - z.x;
+    const dy = ty - z.y;
     const d = Math.hypot(dx, dy);
-    if (d > 1400) continue;
+    if (!indoor && d > 1400) continue;
     nearby++;
     if (nearby > 90) continue;
 
-    const town = inTown(z.x, z.y);
-    const detect = z.paintT > 0 ? 40 : town ? 220 : 130;
+    const town = indoor ? false : inTown(z.x, z.y);
+    const detect = z.paintT > 0 ? 40 : indoor ? 280 : town ? 220 : 130;
     const zR = zombieRadius(z);
     const biteR = PLAYER_RADIUS + zR + 5;
-    const ground = tileSpeed(tileAt(tiles, z.x, z.y));
+    const ground = tileSpeed(tileAt(tiles, z.x, z.y, bw));
     const painted = z.paintT > 0;
     const base =
       (z.brute ? BRUTE_SPEED : town ? ZOMBIE_TOWN_SPEED : ZOMBIE_SPEED) * ground * (painted ? 0.45 : 1);
@@ -606,7 +870,7 @@ function stepZombies(s: GameState, dt: number) {
     if (d < biteR) {
       vx = 0;
       vy = 0;
-      if (z.attackCd <= 0) {
+      if (z.attackCd <= 0 && !invulnCar) {
         bite(s, z);
         z.attackCd = z.brute ? 2.0 : 1.7;
       }
@@ -628,7 +892,7 @@ function stepZombies(s: GameState, dt: number) {
     }
 
     if (d > biteR) {
-      for (const o of s.world.zombies) {
+      for (const o of list) {
         if (o === z || !o.alive) continue;
         const ox = z.x - o.x;
         const oy = z.y - o.y;
@@ -643,7 +907,7 @@ function stepZombies(s: GameState, dt: number) {
 
     const ox = z.x;
     const oy = z.y;
-    tryMove(z, blocked, MAP_W, vx * dt, vy * dt, mapW, mapH, world, zR);
+    tryMove(z, blocked, bw, vx * dt, vy * dt, mapW, mapH, world, zR);
     const mx = z.x - ox;
     const my = z.y - oy;
     const moved = Math.hypot(mx, my);
@@ -655,6 +919,31 @@ function stepZombies(s: GameState, dt: number) {
     z.vx = mx / dt;
     z.vy = my / dt;
   }
+  void p;
+}
+
+function breachInto(s: GameState, dt: number) {
+  const interior = s.interior;
+  if (!interior) return;
+  const b = s.world.buildings.find((x) => x.id === interior.buildingId);
+  if (!b || b.locked) return;
+  const need = b.doorBroken ? 1.15 : 3.6;
+  for (const z of s.world.zombies) {
+    if (!z.alive || z.inside) continue;
+    const d = Math.hypot(z.x - b.doorX, z.y - b.doorY);
+    if (d > 70) {
+      z.enterT = Math.max(0, z.enterT - dt);
+      continue;
+    }
+    z.enterT += dt;
+    if (z.enterT >= need) {
+      z.enterT = 0;
+      z.inside = b.id;
+      z.x = interior.spawnX + (s.rng() - 0.5) * 18;
+      z.y = interior.spawnY - 10;
+      toast(s, b.doorBroken ? "They're in." : "A walker slipped in.");
+    }
+  }
 }
 
 function inTown(x: number, y: number): boolean {
@@ -665,6 +954,7 @@ function inTown(x: number, y: number): boolean {
 function bite(s: GameState, z: Zombie) {
   const p = s.player;
   if (p.invuln > 0) return;
+  if (s.carId != null && !s.interior) return;
   const armor = p.armor ? ITEMS[p.armor] : null;
   const def = armor?.def ?? 0;
   const inf = armor?.infect ?? 0;
@@ -689,6 +979,7 @@ function stepWildlife(s: GameState, dt: number) {
   const mapW = MAP_W * TILE;
   const mapH = MAP_H * TILE;
   const inside = !!s.interior;
+  const inCar = s.carId != null;
   let bearWarned = false;
 
   for (const c of s.world.critters) {
@@ -704,13 +995,13 @@ function stepWildlife(s: GameState, dt: number) {
         bearWarned = true;
         if (pd < 260 && s.toastT <= 0) toast(s, "A bear. Don't.");
       }
-      if (pd < r + PLAYER_RADIUS) {
+      if (pd < r + PLAYER_RADIUS && !inCar) {
         p.hp = 0;
         toast(s, "The bear.");
         burst(s, p.x, p.y, "#4a2018", 16);
       }
       for (const z of s.world.zombies) {
-        if (!z.alive) continue;
+        if (!z.alive || z.inside) continue;
         if (Math.hypot(z.x - c.x, z.y - c.y) < r + zombieRadius(z)) {
           z.alive = false;
           burst(s, z.x, z.y, "#4a2018", 8);
@@ -762,8 +1053,7 @@ function stepWildlife(s: GameState, dt: number) {
     } else {
       const threat = nearestThreat(s, c.x, c.y, c.kind === "turkey" ? 140 : 180);
       const flee = threat && (!inside || threat.kind !== "player");
-      const speed =
-        (c.kind === "turkey" ? (flee ? 70 : 28) : flee ? 88 : 34) * ground;
+      const speed = (c.kind === "turkey" ? (flee ? 70 : 28) : flee ? 88 : 34) * ground;
       if (mom) {
         const mx = mom.x - c.x;
         const my = mom.y - c.y;
@@ -823,7 +1113,7 @@ function nearestThreat(s: GameState, x: number, y: number, r: number): { x: numb
     }
   }
   for (const z of s.world.zombies) {
-    if (!z.alive) continue;
+    if (!z.alive || z.inside) continue;
     const zd = Math.hypot(z.x - x, z.y - y);
     if (zd < d) {
       d = zd;
@@ -847,6 +1137,10 @@ export function useItem(s: GameState, slotIndex: number) {
   if (!slot) return;
   const def = ITEMS[slot.id];
   if (!def) return;
+  if (def.kind === "place") {
+    if (def.id === "workbench") placeWorkbench(s);
+    return;
+  }
   if (def.kind === "weapon" || def.kind === "ranged" || def.kind === "tool") {
     s.player.weapon = def.id;
     toast(s, `Equipped ${def.name}`);
@@ -858,6 +1152,11 @@ export function useItem(s: GameState, slotIndex: number) {
     return;
   }
   if (def.kind === "consumable") {
+    if (def.gas) {
+      if (!refillCar(s, def.gas)) return;
+      takeItem(s.player.inv, def.id, 1);
+      return;
+    }
     if (!takeItem(s.player.inv, def.id, 1)) return;
     if (def.heal) s.player.hp = Math.min(s.player.maxHp, s.player.hp + def.heal);
     if (def.cure) {
@@ -917,6 +1216,20 @@ export function snapshotSave(s: GameState) {
     deadZ: s.world.zombies.filter((z) => !z.alive).map((z) => z.id),
     deadC: s.world.critters.filter((c) => !c.alive).map((c) => c.id),
     interior: s.interior?.buildingId ?? null,
+    doors: Object.fromEntries(
+      s.world.buildings.map((b) => [b.id, { locked: b.locked, broken: b.doorBroken, hp: b.doorHp }]),
+    ),
+    benches: s.placedBenches,
+    cars: s.world.cars.map((c) => ({ id: c.id, x: c.x, y: c.y, ang: c.ang, gas: c.gas })),
+    carId: s.carId,
+    zeds: s.world.zombies.map((z) => ({
+      id: z.id,
+      x: z.x,
+      y: z.y,
+      hp: z.hp,
+      alive: z.alive,
+      inside: z.inside,
+    })),
   };
 }
 
@@ -936,6 +1249,11 @@ export function applySave(
     chopped: number[];
     deadZ: number[];
     deadC?: number[];
+    doors?: Record<string, { locked: boolean; broken: boolean; hp: number }>;
+    benches?: Record<string, { x: number; y: number }[]>;
+    cars?: { id: number; x: number; y: number; ang: number; gas: number }[];
+    carId?: number | null;
+    zeds?: { id: number; x: number; y: number; hp: number; alive: boolean; inside: string | null }[];
   },
 ) {
   s.player.x = data.x;
@@ -945,9 +1263,12 @@ export function applySave(
   s.player.weapon =
     data.weapon === "pistol" ? "pistol9" : data.weapon === "shotgun" ? "pump12" : data.weapon;
   s.player.armor = data.armor;
-  s.player.inv = (data.inv ?? []).map((s) => ({
-    ...s,
-    id: ({ bullets: "ammo9", shells: "ammo12", pistol: "pistol9", shotgun: "pump12" } as Record<string, string>)[s.id] ?? s.id,
+  s.player.inv = (data.inv ?? []).map((slot) => ({
+    ...slot,
+    id:
+      ({ bullets: "ammo9", shells: "ammo12", pistol: "pistol9", shotgun: "pump12" } as Record<string, string>)[
+        slot.id
+      ] ?? slot.id,
   }));
   s.claimed = new Set(data.claimed);
   s.chests = data.chests ?? {};
@@ -959,4 +1280,36 @@ export function applySave(
   const deadC = new Set(data.deadC ?? []);
   for (const c of s.world.critters) if (deadC.has(c.id)) c.alive = false;
   for (const b of s.world.buildings) b.claimed = s.claimed.has(b.id);
+  if (data.doors) {
+    for (const b of s.world.buildings) {
+      const d = data.doors[b.id];
+      if (!d) continue;
+      b.locked = d.locked;
+      b.doorBroken = d.broken;
+      b.doorHp = d.hp;
+    }
+  }
+  s.placedBenches = data.benches ?? {};
+  if (data.cars) {
+    for (const c of s.world.cars) {
+      const saved = data.cars.find((x) => x.id === c.id);
+      if (!saved) continue;
+      c.x = saved.x;
+      c.y = saved.y;
+      c.ang = saved.ang;
+      c.gas = saved.gas;
+    }
+  }
+  s.carId = data.carId ?? null;
+  if (data.zeds) {
+    for (const z of s.world.zombies) {
+      const saved = data.zeds.find((x) => x.id === z.id);
+      if (!saved) continue;
+      z.x = saved.x;
+      z.y = saved.y;
+      z.hp = saved.hp;
+      z.alive = saved.alive;
+      z.inside = saved.inside;
+    }
+  }
 }

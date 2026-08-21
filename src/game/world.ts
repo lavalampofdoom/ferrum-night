@@ -7,6 +7,7 @@ import {
   T,
   TILE,
   TREE_RADIUS,
+  DOOR_HP,
   type TileId,
 } from "./constants";
 import { HOUSES, LANDMARKS, ROADS, STREETS, WATERWAYS, type GeoPlace, type GeoRoad } from "./geo-data";
@@ -38,6 +39,9 @@ export type Building = {
   claimed: boolean;
   lootTable: string;
   zone: "rural" | "ferrum" | "town";
+  locked: boolean;
+  doorBroken: boolean;
+  doorHp: number;
 };
 
 export type Tree = {
@@ -75,6 +79,17 @@ export type Zombie = {
   alive: boolean;
   brute: boolean;
   paintT: number;
+  inside: string | null;
+  enterT: number;
+};
+
+export type Car = {
+  id: number;
+  x: number;
+  y: number;
+  ang: number;
+  gas: number;
+  color: number;
 };
 
 export type CritterKind = "doe" | "buck" | "fawn" | "bear" | "cub" | "turkey" | "squirrel";
@@ -97,12 +112,13 @@ export type Critter = {
 
 export type Interact = {
   id: string;
-  kind: "loot" | "bed" | "chest" | "bench" | "door" | "claim";
+  kind: "loot" | "bed" | "chest" | "bench" | "door" | "claim" | "lock";
   x: number;
   y: number;
   r: number;
   searched?: boolean;
   label: string;
+  look?: string;
 };
 
 export type Interior = {
@@ -124,6 +140,7 @@ export type World = {
   props: Prop[];
   zombies: Zombie[];
   critters: Critter[];
+  cars: Car[];
   startX: number;
   startY: number;
   gridW: number;
@@ -255,7 +272,13 @@ function placeFrom(lm: GeoPlace, buildings: Building[], tiles: Uint8Array, block
     claimed: false,
     lootTable: lm.loot,
     zone: lm.zone,
+    locked: false,
+    doorBroken: false,
+    doorHp: DOOR_HP,
   };
+  if (lm.id === "clinic") {
+    b.locked = false;
+  }
   buildings.push(b);
   footprint(tiles, blocked, b);
   if (lm.kind === "kfc" || lm.kind === "lowes" || lm.kind === "gas" || lm.kind === "clinic") {
@@ -372,6 +395,8 @@ export function generateWorld(seed = 40): World {
         alive: true,
         brute,
         paintT: 0,
+        inside: null,
+        enterT: 0,
       });
     }
   }
@@ -379,7 +404,13 @@ export function generateWorld(seed = 40): World {
   const clinic = buildings.find((b) => b.id === "clinic");
   const startX = clinic?.doorX ?? geoToWorld(36.92611, -80.01912).x;
   const startY = (clinic?.doorY ?? geoToWorld(36.92611, -80.01912).y) + 40;
+  assignDoors(buildings, rng);
+  spawnIndoorZombies(zombies, buildings, rng, () => {
+    zid += 1;
+    return zid;
+  });
   const critters = spawnWildlife(rng, blocked, tiles, seed);
+  const cars = spawnCars(rng, tiles, buildings, blocked);
   return {
     tiles,
     blocked,
@@ -388,6 +419,7 @@ export function generateWorld(seed = 40): World {
     props,
     zombies,
     critters,
+    cars,
     startX,
     startY,
     gridW,
@@ -551,6 +583,128 @@ function spawnWildlife(rng: () => number, blocked: Uint8Array, tiles: Uint8Array
   }
 
   return out;
+}
+
+function makeZombie(
+  id: number,
+  x: number,
+  y: number,
+  rng: () => number,
+  inside: string | null,
+): Zombie {
+  const brute = !inside && rng() < 0.03;
+  const hp = brute ? 150 + Math.floor(rng() * 40) : 56 + Math.floor(rng() * 44);
+  return {
+    id,
+    x,
+    y,
+    hp,
+    maxHp: hp,
+    facing: Math.floor(rng() * 4),
+    vx: 0,
+    vy: 0,
+    walk: rng() * 4,
+    attackCd: 0,
+    wanderT: rng() * 4,
+    wx: x,
+    wy: y,
+    hitT: 0,
+    alive: true,
+    brute,
+    paintT: 0,
+    inside,
+    enterT: 0,
+  };
+}
+
+function assignDoors(buildings: Building[], rng: () => number) {
+  for (const b of buildings) {
+    if (b.id === "clinic") {
+      b.locked = false;
+      b.doorBroken = false;
+      b.doorHp = DOOR_HP;
+      continue;
+    }
+    const house = b.kind === "house" || b.kind === "ranch";
+    b.locked = house ? rng() < 0.4 : rng() < 0.16;
+    b.doorBroken = false;
+    b.doorHp = DOOR_HP;
+  }
+}
+
+function spawnIndoorZombies(
+  zombies: Zombie[],
+  buildings: Building[],
+  rng: () => number,
+  nextId: () => number,
+) {
+  for (const b of buildings) {
+    if (b.id === "clinic") continue;
+    const small = b.kind === "house" || b.kind === "ranch" || b.kind === "gas" || b.kind === "kfc";
+    const chance = small ? 0.26 : b.kind === "lowes" || b.kind === "college" ? 0.38 : 0.3;
+    if (rng() > chance) continue;
+    const n = small ? 1 + (rng() < 0.35 ? 1 : 0) : 1 + Math.floor(rng() * 5);
+    const interior = buildInterior(b, rng);
+    const open: { x: number; y: number }[] = [];
+    for (let y = 2; y < interior.h - 3; y++) {
+      for (let x = 2; x < interior.w - 2; x++) {
+        if (interior.blocked[y * interior.w + x]) continue;
+        open.push({ x: x * TILE + 16, y: y * TILE + 16 });
+      }
+    }
+    if (!open.length) continue;
+    for (let i = 0; i < n; i++) {
+      const p = open[Math.floor(rng() * open.length)]!;
+      zombies.push(makeZombie(nextId(), p.x, p.y, rng, b.id));
+    }
+  }
+}
+
+function spawnCars(
+  rng: () => number,
+  tiles: Uint8Array,
+  buildings: Building[],
+  blocked: Uint8Array,
+): Car[] {
+  const cars: Car[] = [];
+  const add = (x: number, y: number) => {
+    if (blockedAt(blocked, x, y)) return;
+    const t = tileAt(tiles, x, y);
+    if (t === T.WATER || t === T.WALL) return;
+    for (const c of cars) {
+      if (Math.hypot(c.x - x, c.y - y) < 46) return;
+    }
+    cars.push({
+      id: cars.length + 1,
+      x,
+      y,
+      ang: rng() * Math.PI * 2,
+      gas: 70 + rng() * 50,
+      color: Math.floor(rng() * 5),
+    });
+  };
+
+  for (const b of buildings) {
+    if (b.id === "clinic") {
+      add(b.doorX + 48, b.doorY + 90);
+      add(b.doorX - 40, b.doorY + 86);
+      continue;
+    }
+    const parking =
+      b.kind === "gas" || b.kind === "kfc" || b.kind === "lowes" || b.kind === "clinic";
+    if (parking && rng() < 0.85) add(b.doorX + (rng() - 0.5) * 70, b.doorY + 36 + rng() * 40);
+    if ((b.kind === "house" || b.kind === "ranch") && rng() < 0.22) {
+      add(b.doorX + (rng() - 0.5) * 50, b.doorY + 28 + rng() * 24);
+    }
+  }
+
+  for (let i = 0; i < 18 && cars.length < 28; i++) {
+    const x = 80 + rng() * (W * TILE - 160);
+    const y = 80 + rng() * (H * TILE - 160);
+    const t = tileAt(tiles, x, y);
+    if (t === T.ASPHALT || t === T.LINE || t === T.PARKING || t === T.DIRT) add(x, y);
+  }
+  return cars;
 }
 
 export function blockedAt(blocked: Uint8Array, x: number, y: number, w = W): boolean {
@@ -803,7 +957,7 @@ function layoutSpots(b: Building, w: number, h: number, layout: InteriorLayout):
       label: "Leave",
     },
   ];
-  const add = (kind: Interact["kind"], label: string, tx: number, ty: number) => {
+  const add = (kind: Interact["kind"], label: string, tx: number, ty: number, look?: string) => {
     const x = Math.max(2, Math.min(w - 3, tx));
     const y = Math.max(2, Math.min(h - 4, ty));
     spots.push({
@@ -814,91 +968,95 @@ function layoutSpots(b: Building, w: number, h: number, layout: InteriorLayout):
       r: 22,
       searched: false,
       label,
+      look,
     });
   };
 
   if (layout === "house") {
-    add("loot", "Search cabinet", 2, 3);
-    add("chest", "Storage", 3, 5);
-    add("bench", "Crafting bench", 2, 6);
+    add("loot", "Search cabinet", 2, 2, "cabinet");
+    add("loot", "Search crate", 2, 4, "crate");
+    add("loot", "Search shelves", 3, 3, "shelf");
     if (b.claimable) {
-      add("bed", "Bed", 7, 3);
+      add("bed", "Bed", 7, 2, "bed");
+      add("chest", "Dresser", 7, 4, "dresser");
       add("claim", b.claimed ? "Home" : "Claim as home", 8, 5);
     }
   } else if (layout === "ranch") {
-    add("loot", "Search kitchen", 2, 3);
-    add("loot", "Search closet", 7, 3);
-    add("chest", "Storage", 11, 3);
-    add("bench", "Crafting bench", 2, 7);
+    add("loot", "Search kitchen", 2, 2, "kitchen");
+    add("loot", "Search closet", 6, 2, "cabinet");
+    add("loot", "Search crate", 11, 2, "crate");
+    add("loot", "Search shelves", 2, 6, "shelf");
     if (b.claimable) {
-      add("bed", "Bed", 12, 7);
-      add("claim", b.claimed ? "Home" : "Claim as home", 11, 5);
+      add("bed", "Bed", 12, 6, "bed");
+      add("claim", b.claimed ? "Home" : "Claim as home", 11, 4);
     }
   } else if (layout === "shop") {
-    add("loot", "Search counter", 3, 3);
-    add("loot", "Search shelves", 8, 3);
-    add("loot", "Search back room", 4, 7);
-    add("chest", "Storage", w - 4, 7);
-    add("bench", "Crafting bench", w - 4, 3);
+    add("loot", "Search counter", 3, 2, "counter");
+    add("loot", "Search shelves", 8, 2, "shelf");
+    add("loot", "Search back room", 4, 6, "cabinet");
+    add("chest", "Storage", w - 4, 6, "crate");
   } else if (layout === "clinic") {
-    add("loot", "Search cabinet", 3, 3);
-    add("loot", "Exam room", 10, 3);
-    add("loot", "Pharmacy shelf", w - 4, 3);
-    add("loot", "Supply closet", 4, 11);
-    add("chest", "Storage", w - 5, 11);
-    add("bench", "Crafting bench", 10, 7);
+    add("loot", "Search cabinet", 3, 2, "cabinet");
+    add("loot", "Exam room", 10, 2, "counter");
+    add("loot", "Pharmacy shelf", w - 4, 2, "shelf");
+    add("loot", "Supply closet", 4, 10, "cabinet");
+    add("chest", "Storage", w - 5, 10, "crate");
+    add("bench", "Crafting bench", 10, 7, "bench");
     if (b.claimable) {
-      add("bed", "Gurney", 15, 11);
+      add("bed", "Gurney", 15, 10, "gurney");
       add("claim", b.claimed ? "Home" : "Claim as home", 16, 7);
     }
   } else if (layout === "church") {
-    add("loot", "Search pews", 7, 10);
-    add("loot", "Vestry cabinet", 4, 3);
-    add("chest", "Storage", 10, 3);
-    add("bench", "Crafting bench", 7, 14);
+    add("loot", "Search pews", 7, 10, "pew");
+    add("loot", "Vestry cabinet", 4, 3, "cabinet");
+    add("chest", "Storage", 10, 3, "crate");
   } else if (layout === "civic") {
-    add("loot", "Search desk", 3, 4);
-    add("loot", "Records cabinet", w - 4, 4);
-    add("loot", "Office drawer", 12, 4);
-    add("loot", "Back office", 4, 11);
-    add("chest", "Evidence locker", w - 5, 11);
-    add("bench", "Crafting bench", Math.floor(w / 2), 10);
+    add("loot", "Search desk", 3, 3, "desk");
+    add("loot", "Records cabinet", w - 4, 3, "cabinet");
+    add("loot", "Office drawer", 12, 3, "desk");
+    add("loot", "Back office", 4, 10, "cabinet");
+    add("chest", "Evidence locker", w - 5, 10, "locker");
   } else if (layout === "warehouse") {
-    add("loot", "Aisle 1", 3, 4);
-    add("loot", "Aisle 2", 9, 4);
-    add("loot", "Aisle 3", 15, 8);
-    add("loot", "Aisle 4", 21, 4);
-    add("loot", "Back stock", 4, h - 5);
-    add("loot", "Tool bay", w - 5, h - 5);
-    add("chest", "Cage", w - 5, 4);
-    add("bench", "Crafting bench", 8, h - 5);
+    add("loot", "Aisle 1", 3, 3, "shelf");
+    add("loot", "Search shelves", 9, 3, "shelf");
+    add("loot", "Aisle 3", 15, 8, "shelf");
+    add("loot", "Aisle 4", 21, 3, "shelf");
+    add("loot", "Back stock", 4, h - 5, "crate");
+    add("loot", "Tool bay", w - 5, h - 5, "counter");
+    add("chest", "Cage", w - 5, 3, "locker");
   } else if (layout === "hall") {
-    add("loot", "Search desk", 3, 4);
-    add("loot", "Dorm closet", 10, 4);
-    add("loot", "Lounge", 17, 4);
-    add("chest", "Storage", 4, 12);
-    add("bench", "Crafting bench", 16, 12);
+    add("loot", "Search desk", 3, 3, "desk");
+    add("loot", "Dorm closet", 10, 3, "cabinet");
+    add("loot", "Lounge", 17, 3, "shelf");
+    add("chest", "Storage", 4, 11, "crate");
   } else if (layout === "school") {
-    add("loot", "Classroom 1", 3, 4);
-    add("loot", "Classroom 2", 12, 4);
-    add("loot", "Classroom 3", w - 5, 4);
-    add("loot", "Locker bank", 6, 12);
-    add("chest", "Supply closet", w - 5, 12);
-    add("bench", "Shop bench", 14, 12);
+    add("loot", "Classroom 1", 3, 3, "desk");
+    add("loot", "Classroom 2", 12, 3, "desk");
+    add("loot", "Classroom 3", w - 5, 3, "desk");
+    add("loot", "Locker bank", 6, 11, "locker");
+    add("chest", "Supply closet", w - 5, 11, "cabinet");
   } else if (layout === "college") {
-    add("loot", "Lecture hall desk", 5, 6);
-    add("loot", "Classroom 2", 14, 6);
-    add("loot", "Classroom 3", 22, 6);
-    add("loot", "Lab cabinet", 30, 6);
-    add("loot", "Faculty office", 38, 6);
-    add("loot", "Dorm A", 5, 22);
-    add("loot", "Dorm B", 16, 22);
-    add("loot", "Dorm C", 27, 22);
-    add("loot", "Dorm D", 36, 22);
-    add("loot", "Vending alcove", 20, 15);
-    add("chest", "Lost and found", 8, 15);
-    add("bench", "Shop bench", 33, 15);
+    add("loot", "Lecture hall desk", 5, 5, "desk");
+    add("loot", "Classroom 2", 14, 5, "desk");
+    add("loot", "Classroom 3", 22, 5, "desk");
+    add("loot", "Lab cabinet", 30, 5, "cabinet");
+    add("loot", "Faculty office", 38, 5, "desk");
+    add("loot", "Dorm A", 5, 21, "bed");
+    add("loot", "Search shelves", 16, 21, "shelf");
+    add("loot", "Dorm C", 27, 21, "cabinet");
+    add("loot", "Dorm D", 36, 21, "bed");
+    add("loot", "Vending alcove", 20, 14, "counter");
+    add("chest", "Lost and found", 8, 14, "crate");
   }
+  spots.push({
+    id: `${b.id}-lock`,
+    kind: "lock",
+    x: (doorX - 2) * TILE + 16,
+    y: (doorY - 2) * TILE + 16,
+    r: 22,
+    label: "Lock door",
+    look: "lock",
+  });
   return spots;
 }
 

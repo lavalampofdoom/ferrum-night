@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { useRef } from "react";
 import { Link } from "@tanstack/react-router";
-import { Pause, Backpack, Hammer, DoorOpen } from "lucide-react";
+import { Pause, Backpack, Hand } from "lucide-react";
 import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { ITEMS, RECIPES, canCraft, countItem } from "@/game/items";
@@ -54,6 +54,7 @@ export function GameHud({
             {hud.infection > 0 ? (
               <Bar label="Infection" value={hud.infection / 180} color="bg-infect" />
             ) : null}
+            {hud.inCar ? <Bar label="Gas" value={hud.gas / Math.max(1, hud.gasMax)} color="bg-accent" /> : null}
             <p className="mt-1 font-mono text-[11px] text-faint">
               {ITEMS[hud.weapon]?.name ?? "Hands"}
               {ITEMS[hud.weapon]?.ammo
@@ -206,6 +207,9 @@ function Inventory({ onUse, onCraft }: { onUse: (i: number) => void; onCraft: (i
         </div>
         <h3 className="mt-4 font-display text-sm text-muted">
           Crafting {hud.atBench ? "· bench" : "· hand"}
+          <span className="ml-2 font-sans text-[10px] text-faint">
+            {hud.atBench ? "metal, ammo, meds" : "hatchet, bat, table"}
+          </span>
         </h3>
         <ul className="mt-2 space-y-1">
           {RECIPES.filter((r) => (hud.atBench ? true : r.station === "hand")).map((r) => {
@@ -240,7 +244,7 @@ function PauseMenu({ onResume, onNew }: { onResume: () => void; onNew: () => voi
     <div className="absolute inset-0 z-40 grid place-items-center bg-bg/70 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-surface p-6 ring-1 ring-border">
         <h2 className="font-display text-2xl">Paused</h2>
-        <p className="mt-2 text-sm text-muted">WASD move · E enter/search · Space attack · I pack</p>
+        <p className="mt-2 text-sm text-muted">WASD walk · E use · Space strike · I pack · cars W/S drive, A/D steer</p>
         <div className="mt-5 flex flex-col gap-2">
           <button type="button" onClick={onResume} className="rounded-xl bg-accent px-4 py-3 text-accent-fg">
             Resume
@@ -370,19 +374,38 @@ function TouchPad({
           onPointerCancel={() => onAct(false)}
           className="grid size-14 place-items-center rounded-full bg-raised/80 ring-1 ring-border"
         >
-          <DoorOpen className="size-5" />
+          <Hand className="size-5" />
         </button>
         <button
           type="button"
-          aria-label="Attack"
+          aria-label="Strike"
           onPointerDown={() => onAttack(true)}
           onPointerUp={() => onAttack(false)}
           onPointerCancel={() => onAttack(false)}
           className="grid size-16 place-items-center rounded-full bg-accent text-accent-fg"
         >
-          <Hammer className="size-6" />
+          <KnifeIcon className="size-6" />
         </button>
       </div>
     </div>
+  );
+}
+
+function KnifeIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M4 20 17.2 6.8a2.2 2.2 0 0 1 3.1 3.1L7.1 23" />
+      <path d="m13 9 4 4" />
+      <path d="M3.5 15.5 8 20" />
+    </svg>
   );
 }

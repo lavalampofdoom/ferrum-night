@@ -63,7 +63,7 @@ export const PLACES: Place[] = [
     address: "1576 Fairy Stone Park Rd",
     zone: "rural",
     loot: "Food, cloth, wood",
-    blurb: "West on VA-57 toward Fairy Stone. Claimable. Deep woods, fewer walkers, long walk back.",
+    blurb: "West on VA-57 toward Fairy Stone. Claimable. Farm crates sometimes hide a hatchet.",
     tags: ["fairy stone", "va-57", "farm", "house", "rural"],
   },
   {
@@ -72,7 +72,7 @@ export const PLACES: Place[] = [
     address: "800 Old Franklin Tpke, Rocky Mount",
     zone: "town",
     loot: "Scrap, wood, tools, plastic",
-    blurb: "Tool run on Old Franklin Turnpike. Crafting metal and a workbench nearby if you clear the lot.",
+    blurb: "Tool run on Old Franklin Turnpike. Scrap, axes, crowbars. Craft a table if you need a bench.",
     tags: ["lowes", "hardware", "tools", "rocky mount", "old franklin"],
   },
   {
@@ -179,7 +179,7 @@ const HELP: SearchHit[] = [
     id: "help-use",
     kind: "help",
     title: "Search / enter — E",
-    blurb: "Press E (or Use) on a door, cabinet, bed, chest, or workbench.",
+    blurb: "Press E (or the hand) on a door, cabinet, bed, crate, lock, car, or workbench.",
     href: "/guide?q=search",
     tags: ["e", "use", "door", "loot", "enter"],
   },
@@ -195,7 +195,7 @@ const HELP: SearchHit[] = [
     id: "help-guns",
     kind: "help",
     title: "Guns and ammo",
-    blurb: "9mm, 1911 .45, 12ga pump, 20ga sawed-off, AR-15 5.56, 7.62 bolt rifle, modern bow. Firearms loot-only. Craft ammo and the bow at a bench.",
+    blurb: "9mm, 1911 .45, 12ga pump, 20ga sawed-off, AR-15 5.56, 7.62 bolt rifle, modern bow. Guns are rare in furniture. Craft ammo and the bow at a bench.",
     href: "/guide?q=gun",
     tags: ["pistol", "shotgun", "ar-15", "rifle", "bow", "9mm", "1911", "5.56", "7.62", "ammo"],
   },
@@ -227,7 +227,7 @@ const HELP: SearchHit[] = [
     id: "help-interior",
     kind: "help",
     title: "Interiors",
-    blurb: "Houses are two small rooms. Ferrum College halls open into classrooms and dorms. Lowe's is aisles. Match the building outside.",
+    blurb: "Houses are two small rooms with beds, shelves, and crates. Ferrum College halls open into classrooms and dorms. Lowe's is aisles.",
     href: "/guide?q=interior",
     tags: ["interior", "rooms", "college", "house", "inside"],
   },
@@ -235,7 +235,7 @@ const HELP: SearchHit[] = [
     id: "help-pack",
     kind: "help",
     title: "Pack — I",
-    blurb: "Open the pack to eat, drink, wear armor, and craft. A workbench unlocks metal recipes.",
+    blurb: "Open the pack to eat, drink, wear armor, and craft. Hand recipes are simple. A placed workbench unlocks metal, ammo, and meds.",
     href: "/guide?q=pack",
     tags: ["inventory", "i", "craft", "bench"],
   },
@@ -254,6 +254,30 @@ const HELP: SearchHit[] = [
     blurb: "Some houses and the clinic can be claimed. Sleep in a bed to wait out the night.",
     href: "/guide?q=claim",
     tags: ["house", "bed", "safe", "base"],
+  },
+  {
+    id: "help-lock",
+    kind: "help",
+    title: "Locks",
+    blurb: "Some houses start locked. Bash the door. Inside, use the lock by the door if it is still standing. Walkers cannot enter a locked house. An unlocked door is slow to breach; a broken door is fast.",
+    href: "/guide?q=lock",
+    tags: ["lock", "door", "bash", "break", "house"],
+  },
+  {
+    id: "help-car",
+    kind: "help",
+    title: "Cars",
+    blurb: "E to enter. W/S drive, A/D steer. About two minutes of gas. Ram walkers. You cannot be bitten in a car. Pour a gas can from the pack to refill.",
+    href: "/guide?q=car",
+    tags: ["car", "drive", "gas", "ram", "vehicle"],
+  },
+  {
+    id: "help-bench",
+    kind: "help",
+    title: "Crafting table",
+    blurb: "The clinic on Ferrum Mountain Road has the only standing bench. Craft more from wood and scrap, then place one inside a building from the pack.",
+    href: "/guide?q=bench",
+    tags: ["workbench", "crafting table", "place", "clinic"],
   },
 ];
 
@@ -279,6 +303,8 @@ const PAGES: SearchHit[] = [
 function itemBlurb(id: string): string {
   const it = ITEMS[id];
   if (!it) return "";
+  if (it.kind === "place") return "Place inside a building. Unlocks bench recipes.";
+  if (it.gas) return `Adds ${it.gas} seconds of gas to a nearby car.`;
   if (it.kind === "consumable" && it.cure) return "Clears infection. Find it at the clinic first.";
   if (it.heal) return `Restores ${it.heal} health.`;
   if (it.kind === "weapon" || it.kind === "ranged" || it.kind === "tool") {

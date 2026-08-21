@@ -1,4 +1,4 @@
-export type ItemKind = "mat" | "consumable" | "weapon" | "ranged" | "tool" | "armor" | "ammo";
+export type ItemKind = "mat" | "consumable" | "weapon" | "ranged" | "tool" | "armor" | "ammo" | "place";
 
 export type ItemDef = {
   id: string;
@@ -21,6 +21,7 @@ export type ItemDef = {
   infect?: number;
   heal?: number;
   cure?: boolean;
+  gas?: number;
 };
 
 export const ITEMS: Record<string, ItemDef> = {
@@ -35,6 +36,7 @@ export const ITEMS: Record<string, ItemDef> = {
   water: { id: "water", name: "Water Bottle", kind: "consumable", stack: 20, heal: 8 },
   medkit: { id: "medkit", name: "Medkit", kind: "consumable", stack: 6, heal: 55 },
   antibiotics: { id: "antibiotics", name: "Antibiotics", kind: "consumable", stack: 6, cure: true },
+  gascan: { id: "gascan", name: "Gas Can", kind: "consumable", stack: 6, gas: 50 },
   ammo9: { id: "ammo9", name: "9mm", kind: "ammo", stack: 48 },
   ammo45: { id: "ammo45", name: ".45 ACP", kind: "ammo", stack: 32 },
   ammo12: { id: "ammo12", name: "12 Gauge", kind: "ammo", stack: 16 },
@@ -81,6 +83,7 @@ export const ITEMS: Record<string, ItemDef> = {
     tool: "chop",
     chop: 2,
   },
+  workbench: { id: "workbench", name: "Crafting Table", kind: "place", stack: 3 },
   pistol9: {
     id: "pistol9",
     name: "9mm Pistol",
@@ -219,6 +222,7 @@ export const RECIPES: Recipe[] = [
   { id: "bat", out: "bat", count: 1, station: "hand", needs: { wood: 5 } },
   { id: "hoodie", out: "hoodie", count: 1, station: "hand", needs: { cloth: 4 } },
   { id: "arrows", out: "arrows", count: 4, station: "hand", needs: { wood: 2, stone: 1 } },
+  { id: "workbench", out: "workbench", count: 1, station: "hand", needs: { wood: 8, scrap: 3 } },
   { id: "knife", out: "knife", count: 1, station: "bench", needs: { scrap: 2 } },
   { id: "axe", out: "axe", count: 1, station: "bench", needs: { wood: 4, scrap: 3 } },
   { id: "crowbar", out: "crowbar", count: 1, station: "bench", needs: { scrap: 4 } },
@@ -235,6 +239,8 @@ export const RECIPES: Recipe[] = [
   { id: "ammo762", out: "ammo762", count: 3, station: "bench", needs: { scrap: 2, stone: 2 } },
   { id: "paint", out: "paint", count: 12, station: "bench", needs: { plastic: 1 } },
   { id: "medkit", out: "medkit", count: 1, station: "bench", needs: { cloth: 2, plastic: 1 } },
+  { id: "antibiotics", out: "antibiotics", count: 1, station: "bench", needs: { cloth: 2, electronics: 1 } },
+  { id: "moto2", out: "moto", count: 1, station: "bench", needs: { jacket: 1, scrap: 3 } },
 ];
 
 export type Slot = { id: string; n: number };
@@ -287,23 +293,34 @@ export function craft(inv: Slot[], r: Recipe): boolean {
   return addItem(inv, r.out, r.count);
 }
 
+const GUNS = ["pistol9", "pistol45", "pump12", "sawn20", "ar15", "bolt762", "bow"] as const;
+
 export const LOOT: Record<string, { id: string; w: number; n: [number, number] }[]> = {
   house: [
-    { id: "food", w: 8, n: [1, 2] },
-    { id: "water", w: 7, n: [1, 2] },
-    { id: "cloth", w: 6, n: [1, 3] },
-    { id: "scrap", w: 4, n: [1, 2] },
+    { id: "food", w: 10, n: [1, 2] },
+    { id: "water", w: 8, n: [1, 2] },
+    { id: "cloth", w: 7, n: [1, 3] },
+    { id: "scrap", w: 5, n: [1, 2] },
     { id: "knife", w: 2, n: [1, 1] },
     { id: "hoodie", w: 2, n: [1, 1] },
     { id: "medkit", w: 1, n: [1, 1] },
     { id: "antibiotics", w: 1, n: [1, 1] },
     { id: "bat", w: 2, n: [1, 1] },
     { id: "ammo9", w: 2, n: [4, 10] },
-    { id: "pistol9", w: 1, n: [1, 1] },
-    { id: "paintball", w: 1, n: [1, 1] },
-    { id: "paint", w: 2, n: [8, 16] },
-    { id: "bow", w: 1, n: [1, 1] },
-    { id: "arrows", w: 2, n: [3, 8] },
+    { id: "gascan", w: 2, n: [1, 1] },
+    { id: "paint", w: 1, n: [8, 16] },
+    { id: "arrows", w: 1, n: [3, 8] },
+  ],
+  farm: [
+    { id: "food", w: 8, n: [1, 3] },
+    { id: "water", w: 6, n: [1, 2] },
+    { id: "cloth", w: 5, n: [1, 3] },
+    { id: "wood", w: 6, n: [2, 5] },
+    { id: "scrap", w: 3, n: [1, 2] },
+    { id: "knife", w: 2, n: [1, 1] },
+    { id: "bat", w: 2, n: [1, 1] },
+    { id: "gascan", w: 2, n: [1, 1] },
+    { id: "hoodie", w: 1, n: [1, 1] },
   ],
   clinic: [
     { id: "medkit", w: 8, n: [1, 2] },
@@ -322,8 +339,8 @@ export const LOOT: Record<string, { id: string; w: number; n: [number, number] }
     { id: "scrap", w: 3, n: [1, 2] },
     { id: "bat", w: 2, n: [1, 1] },
     { id: "ammo9", w: 2, n: [6, 12] },
+    { id: "gascan", w: 3, n: [1, 1] },
     { id: "paint", w: 2, n: [8, 20] },
-    { id: "pistol9", w: 1, n: [1, 1] },
   ],
   kfc: [
     { id: "food", w: 12, n: [2, 5] },
@@ -331,21 +348,20 @@ export const LOOT: Record<string, { id: string; w: number; n: [number, number] }
     { id: "plastic", w: 5, n: [1, 3] },
     { id: "scrap", w: 3, n: [1, 2] },
     { id: "knife", w: 3, n: [1, 1] },
+    { id: "gascan", w: 1, n: [1, 1] },
   ],
   lowes: [
     { id: "wood", w: 10, n: [3, 8] },
     { id: "scrap", w: 10, n: [3, 6] },
     { id: "stone", w: 6, n: [2, 5] },
     { id: "plastic", w: 5, n: [1, 4] },
-    { id: "hatchet", w: 3, n: [1, 1] },
     { id: "crowbar", w: 3, n: [1, 1] },
     { id: "electronics", w: 3, n: [1, 2] },
     { id: "axe", w: 2, n: [1, 1] },
     { id: "jacket", w: 2, n: [1, 1] },
-    { id: "pump12", w: 1, n: [1, 1] },
-    { id: "sawn20", w: 1, n: [1, 1] },
-    { id: "ammo12", w: 2, n: [2, 6] },
-    { id: "ammo20", w: 2, n: [2, 6] },
+    { id: "gascan", w: 3, n: [1, 1] },
+    { id: "ammo12", w: 1, n: [2, 6] },
+    { id: "ammo20", w: 1, n: [2, 6] },
   ],
   gas: [
     { id: "food", w: 6, n: [1, 2] },
@@ -353,8 +369,8 @@ export const LOOT: Record<string, { id: string; w: number; n: [number, number] }
     { id: "scrap", w: 5, n: [1, 3] },
     { id: "plastic", w: 4, n: [1, 2] },
     { id: "electronics", w: 2, n: [1, 1] },
+    { id: "gascan", w: 8, n: [1, 2] },
     { id: "ammo9", w: 2, n: [4, 10] },
-    { id: "pistol9", w: 1, n: [1, 1] },
   ],
   college: [
     { id: "cloth", w: 6, n: [1, 3] },
@@ -363,32 +379,49 @@ export const LOOT: Record<string, { id: string; w: number; n: [number, number] }
     { id: "water", w: 4, n: [1, 2] },
     { id: "bat", w: 3, n: [1, 1] },
     { id: "hoodie", w: 3, n: [1, 1] },
-    { id: "paintball", w: 3, n: [1, 1] },
+    { id: "paintball", w: 2, n: [1, 1] },
     { id: "paint", w: 4, n: [10, 24] },
-    { id: "pistol9", w: 1, n: [1, 1] },
     { id: "ammo9", w: 2, n: [6, 14] },
-    { id: "ar15", w: 1, n: [1, 1] },
-    { id: "ammo556", w: 1, n: [10, 24] },
+    { id: "gascan", w: 1, n: [1, 1] },
   ],
   civic: [
     { id: "scrap", w: 5, n: [1, 3] },
     { id: "electronics", w: 4, n: [1, 2] },
     { id: "cloth", w: 3, n: [1, 2] },
-    { id: "pistol9", w: 2, n: [1, 1] },
-    { id: "pistol45", w: 2, n: [1, 1] },
     { id: "ammo9", w: 3, n: [8, 18] },
     { id: "ammo45", w: 2, n: [6, 12] },
-    { id: "ar15", w: 1, n: [1, 1] },
     { id: "ammo556", w: 2, n: [12, 30] },
-    { id: "bolt762", w: 1, n: [1, 1] },
     { id: "ammo762", w: 1, n: [4, 10] },
     { id: "riot", w: 1, n: [1, 1] },
+    { id: "gascan", w: 1, n: [1, 1] },
   ],
   church: [
     { id: "cloth", w: 6, n: [1, 3] },
     { id: "food", w: 4, n: [1, 2] },
     { id: "water", w: 4, n: [1, 2] },
     { id: "medkit", w: 2, n: [1, 1] },
+  ],
+};
+
+const RARE_GUN: Record<string, { id: string; p: number }[]> = {
+  house: [{ id: "pistol9", p: 0.035 }, { id: "bow", p: 0.02 }],
+  farm: [{ id: "pistol9", p: 0.02 }],
+  store: [{ id: "pistol9", p: 0.04 }],
+  gas: [{ id: "pistol9", p: 0.05 }],
+  lowes: [
+    { id: "pump12", p: 0.05 },
+    { id: "sawn20", p: 0.04 },
+  ],
+  college: [
+    { id: "pistol9", p: 0.04 },
+    { id: "ar15", p: 0.025 },
+    { id: "paintball", p: 0.06 },
+  ],
+  civic: [
+    { id: "pistol9", p: 0.07 },
+    { id: "pistol45", p: 0.06 },
+    { id: "ar15", p: 0.04 },
+    { id: "bolt762", p: 0.03 },
   ],
 };
 
@@ -414,6 +447,17 @@ export function rollLoot(
     const existing = out.find((o) => o.id === pick.id);
     if (existing) existing.n += n;
     else out.push({ id: pick.id, n });
+  }
+  const rares = RARE_GUN[table];
+  if (rares) {
+    for (const g of rares) {
+      if (rng() < g.p && GUNS.includes(g.id as (typeof GUNS)[number])) {
+        const existing = out.find((o) => o.id === g.id);
+        if (existing) existing.n += 1;
+        else out.push({ id: g.id, n: 1 });
+        break;
+      }
+    }
   }
   return out;
 }

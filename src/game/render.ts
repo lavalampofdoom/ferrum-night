@@ -2,7 +2,7 @@ import type { Assets } from "./assets";
 import { MAP_H, MAP_W, T, TILE, VIEW_TILES_X, geoToWorld } from "./constants";
 import { ITEMS } from "./items";
 import type { GameState } from "./sim";
-import type { Building, Critter } from "./world";
+import type { Building, Car, Critter } from "./world";
 import { ROADS } from "./geo-data";
 
 const TILE_IMG: Record<number, string> = {
@@ -90,8 +90,15 @@ export function drawFrame(
         draw: () => drawBuilding(ctx, assets, b),
       });
     }
+    for (const car of s.world.cars) {
+      if (!inView(car.x, car.y, cam, vw, vh, 50)) continue;
+      sprites.push({
+        y: car.y + 8,
+        draw: () => drawCar(ctx, car, s.carId === car.id),
+      });
+    }
     for (const z of s.world.zombies) {
-      if (!z.alive) continue;
+      if (!z.alive || z.inside) continue;
       if (!inView(z.x, z.y, cam, vw, vh, 50)) continue;
       sprites.push({
         y: z.y,
@@ -124,35 +131,48 @@ export function drawFrame(
     for (const f of s.interior.furniture) {
       sprites.push({
         y: f.y,
-        draw: () => drawFurn(ctx, f),
+        draw: () => drawFurn(ctx, { ...f, searched: s.searched.has(f.id) }),
+      });
+    }
+    const bid = s.interior.buildingId;
+    for (const z of s.world.zombies) {
+      if (!z.alive || z.inside !== bid) continue;
+      sprites.push({
+        y: z.y,
+        draw: () => {
+          const moving = Math.hypot(z.vx, z.vy) > 8;
+          drawActor(ctx, z.brute ? assets.brute : assets.zombie, z.x, z.y, z.facing, moving ? z.walk : 0, z.hitT > 0, false, z.brute ? 42 : 28);
+        },
       });
     }
   }
 
-  sprites.push({
-    y: s.player.y,
-    draw: () => {
-      const attacking = s.player.attackT > (ITEMS[s.player.weapon]?.rate ?? 0.4) * 0.45;
-      const sheet = attacking ? assets.attack : assets.player;
-      const face = attacking ? 0 : s.player.facing;
-      const frame = attacking
-        ? Math.min(3, Math.floor((1 - s.player.attackT / (ITEMS[s.player.weapon]?.rate ?? 0.4)) * 4))
-        : s.player.moving
-          ? s.player.walk
-          : 0;
-      drawActor(
-        ctx,
-        sheet,
-        s.player.x,
-        s.player.y,
-        face,
-        frame,
-        s.player.invuln > 0 && Math.floor(s.time * 20) % 2 === 0,
-        attacking,
-        28,
-      );
-    },
-  });
+  if (s.carId == null) {
+    sprites.push({
+      y: s.player.y,
+      draw: () => {
+        const attacking = s.player.attackT > (ITEMS[s.player.weapon]?.rate ?? 0.4) * 0.45;
+        const sheet = attacking ? assets.attack : assets.player;
+        const face = attacking ? 0 : s.player.facing;
+        const frame = attacking
+          ? Math.min(3, Math.floor((1 - s.player.attackT / (ITEMS[s.player.weapon]?.rate ?? 0.4)) * 4))
+          : s.player.moving
+            ? s.player.walk
+            : 0;
+        drawActor(
+          ctx,
+          sheet,
+          s.player.x,
+          s.player.y,
+          face,
+          frame,
+          s.player.invuln > 0 && Math.floor(s.time * 20) % 2 === 0,
+          attacking,
+          28,
+        );
+      },
+    });
+  }
 
   sprites.sort((a, b) => a.y - b.y);
   for (const sp of sprites) sp.draw();
@@ -254,6 +274,27 @@ function drawBuilding(ctx: CanvasRenderingContext2D, assets: Assets, b: Building
     ctx.fillStyle = "#c9c3b0";
     ctx.fillRect(b.doorX - 3, b.y - 8, 6, 6);
   }
+  const dx = b.doorX;
+  const dy = b.y + b.h - 6;
+  if (b.doorBroken) {
+    ctx.fillStyle = "#1a1612";
+    ctx.fillRect(dx - 7, dy - 16, 14, 18);
+    ctx.fillStyle = "#6b5344";
+    ctx.fillRect(dx - 8, dy - 16, 3, 10);
+    ctx.fillRect(dx + 5, dy - 12, 3, 12);
+    ctx.fillStyle = "#3d3228";
+    ctx.fillRect(dx - 4, dy - 4, 8, 3);
+  } else if (b.locked) {
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(dx - 4, dy - 10, 8, 7);
+    ctx.strokeStyle = "#c9a227";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(dx, dy - 10, 3, Math.PI, 0);
+    ctx.stroke();
+    ctx.fillStyle = "#2a2418";
+    ctx.fillRect(dx - 1, dy - 8, 2, 3);
+  }
 }
 
 function drawActor(
@@ -313,30 +354,186 @@ function drawCritter(ctx: CanvasRenderingContext2D, assets: Assets, c: Critter) 
   drawActor(ctx, sheet, c.x, c.y, c.facing, moving ? c.walk : 0, false, false, size);
 }
 
-function drawFurn(ctx: CanvasRenderingContext2D, f: { kind: string; x: number; y: number; searched?: boolean }) {
-  if (f.kind === "bed") {
-    ctx.fillStyle = "#3d4a5c";
-    ctx.fillRect(f.x - 16, f.y - 12, 32, 22);
+function drawCar(ctx: CanvasRenderingContext2D, car: Car, occupied: boolean) {
+  const palettes = [
+    ["#6b2a24", "#4a1c18", "#c9c3b0"],
+    ["#2c3a4a", "#1a242e", "#8aa0b8"],
+    ["#3d4a2c", "#262e1c", "#c4c9b0"],
+    ["#5a4634", "#3a2e22", "#d4c4a0"],
+    ["#3a3a3c", "#1e1e20", "#b0b0b4"],
+  ];
+  const [body, shade, glass] = palettes[car.color % palettes.length]!;
+  ctx.save();
+  ctx.translate(car.x, car.y);
+  ctx.rotate(-car.ang);
+  ctx.fillStyle = "#1a1a1c";
+  ctx.fillRect(-7, -16, 5, 8);
+  ctx.fillRect(2, -16, 5, 8);
+  ctx.fillRect(-7, 8, 5, 8);
+  ctx.fillRect(2, 8, 5, 8);
+  ctx.fillStyle = shade;
+  ctx.fillRect(-10, -18, 20, 36);
+  ctx.fillStyle = body;
+  ctx.fillRect(-9, -16, 18, 32);
+  ctx.fillStyle = shade;
+  ctx.fillRect(-9, 6, 18, 10);
+  ctx.fillStyle = occupied ? "#1c2420" : glass;
+  ctx.globalAlpha = occupied ? 0.85 : 0.7;
+  ctx.fillRect(-7, -8, 14, 10);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#ead56a";
+  ctx.fillRect(-8, 14, 4, 3);
+  ctx.fillRect(4, 14, 4, 3);
+  ctx.fillStyle = "#a33b34";
+  ctx.fillRect(-8, -17, 4, 2);
+  ctx.fillRect(4, -17, 4, 2);
+  if (occupied) {
+    ctx.fillStyle = "#c9c3b0";
+    ctx.fillRect(-3, -4, 6, 5);
+  }
+  ctx.restore();
+}
+
+function drawFurn(
+  ctx: CanvasRenderingContext2D,
+  f: { kind: string; x: number; y: number; searched?: boolean; label?: string; look?: string },
+) {
+  const look = (f.look || f.kind || inferLook(f.kind, f.label ?? "")).toLowerCase();
+  if (look === "bed" || (f.kind === "bed" && look !== "gurney")) {
+    ctx.fillStyle = "#4a3428";
+    ctx.fillRect(f.x - 18, f.y - 14, 36, 26);
+    ctx.fillStyle = "#2a2018";
+    ctx.fillRect(f.x - 18, f.y - 14, 36, 4);
+    ctx.fillRect(f.x - 18, f.y + 8, 36, 4);
+    ctx.fillStyle = "#6a5a48";
+    ctx.fillRect(f.x - 16, f.y - 10, 32, 16);
+    ctx.fillStyle = "#8a7a68";
+    ctx.fillRect(f.x - 14, f.y - 4, 28, 8);
     ctx.fillStyle = "#c9c3b0";
     ctx.fillRect(f.x - 14, f.y - 10, 12, 8);
-    ctx.fillStyle = "#6a5a48";
-    ctx.fillRect(f.x - 16, f.y + 8, 32, 3);
-  } else if (f.kind === "bench") {
-    ctx.fillStyle = "#5a4634";
-    ctx.fillRect(f.x - 14, f.y - 8, 28, 16);
+    ctx.fillStyle = "#3d3228";
+    ctx.fillRect(f.x - 17, f.y + 10, 4, 4);
+    ctx.fillRect(f.x + 13, f.y + 10, 4, 4);
+  } else if (look === "gurney") {
+    ctx.fillStyle = "#8a9aaa";
+    ctx.fillRect(f.x - 16, f.y - 10, 32, 18);
+    ctx.fillStyle = "#c9c3b0";
+    ctx.fillRect(f.x - 14, f.y - 8, 28, 8);
+    ctx.fillStyle = "#3d4a5c";
+    ctx.fillRect(f.x - 15, f.y + 8, 4, 6);
+    ctx.fillRect(f.x + 11, f.y + 8, 4, 6);
+  } else if (look === "bench" || f.kind === "bench") {
+    ctx.fillStyle = "#3a2a1c";
+    ctx.fillRect(f.x - 18, f.y - 6, 36, 16);
+    ctx.fillStyle = "#6b4a2b";
+    ctx.fillRect(f.x - 16, f.y - 10, 32, 8);
     ctx.fillStyle = "#8a6a3b";
-    ctx.fillRect(f.x - 10, f.y - 12, 8, 6);
-    ctx.fillRect(f.x + 2, f.y - 11, 10, 5);
+    ctx.fillRect(f.x - 14, f.y - 14, 10, 6);
+    ctx.fillRect(f.x + 2, f.y - 13, 12, 5);
+    ctx.fillStyle = "#4a4a4c";
+    ctx.fillRect(f.x + 8, f.y - 8, 6, 4);
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(f.x - 10, f.y - 6, 3, 8);
+  } else if (look === "shelf" || look === "shelves") {
+    ctx.fillStyle = "#3d2a1c";
+    ctx.fillRect(f.x - 14, f.y - 22, 28, 32);
+    ctx.fillStyle = "#5a3e28";
+    ctx.fillRect(f.x - 12, f.y - 20, 24, 3);
+    ctx.fillRect(f.x - 12, f.y - 10, 24, 3);
+    ctx.fillRect(f.x - 12, f.y, 24, 3);
+    ctx.fillRect(f.x - 12, f.y + 8, 24, 3);
+    const books = ["#6a2a24", "#2c3a4a", "#c9a227", "#3d4a2c", "#8a6a3b"];
+    for (let i = 0; i < 5; i++) {
+      ctx.fillStyle = books[i]!;
+      ctx.fillRect(f.x - 10 + i * 4, f.y - 19, 3, 8);
+      ctx.fillRect(f.x - 10 + i * 4, f.y - 9, 3, 8);
+    }
+  } else if (look === "cabinet" || look === "closet") {
+    ctx.fillStyle = "#5a3e28";
+    ctx.fillRect(f.x - 12, f.y - 18, 24, 28);
+    ctx.fillStyle = "#3d2a1c";
+    ctx.fillRect(f.x - 1, f.y - 16, 2, 24);
+    ctx.fillStyle = "#8a6a3b";
+    ctx.fillRect(f.x - 10, f.y - 16, 8, 10);
+    ctx.fillRect(f.x + 2, f.y - 16, 8, 10);
+    ctx.fillRect(f.x - 10, f.y - 4, 8, 10);
+    ctx.fillRect(f.x + 2, f.y - 4, 8, 10);
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(f.x - 4, f.y - 8, 2, 2);
+    ctx.fillRect(f.x + 2, f.y - 8, 2, 2);
+  } else if (look === "dresser") {
+    ctx.fillStyle = "#5a3e28";
+    ctx.fillRect(f.x - 14, f.y - 12, 28, 22);
+    ctx.fillStyle = "#8a6a3b";
+    ctx.fillRect(f.x - 12, f.y - 10, 24, 5);
+    ctx.fillRect(f.x - 12, f.y - 3, 24, 5);
+    ctx.fillRect(f.x - 12, f.y + 4, 24, 5);
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(f.x - 2, f.y - 8, 4, 2);
+    ctx.fillRect(f.x - 2, f.y - 1, 4, 2);
+    ctx.fillRect(f.x - 2, f.y + 6, 4, 2);
+  } else if (look === "kitchen" || look === "counter") {
+    ctx.fillStyle = "#4a4a4c";
+    ctx.fillRect(f.x - 16, f.y - 8, 32, 16);
+    ctx.fillStyle = "#8a8a8c";
+    ctx.fillRect(f.x - 16, f.y - 12, 32, 6);
+    ctx.fillStyle = "#2a2a2c";
+    ctx.fillRect(f.x - 12, f.y - 10, 8, 4);
+    ctx.fillStyle = "#6b5344";
+    ctx.fillRect(f.x + 4, f.y - 16, 6, 6);
+  } else if (look === "desk") {
+    ctx.fillStyle = "#5a3e28";
+    ctx.fillRect(f.x - 16, f.y - 6, 32, 14);
+    ctx.fillStyle = "#8a6a3b";
+    ctx.fillRect(f.x - 16, f.y - 10, 32, 6);
+    ctx.fillStyle = "#c9c3b0";
+    ctx.fillRect(f.x - 8, f.y - 14, 10, 6);
+    ctx.fillStyle = "#2c3a4a";
+    ctx.fillRect(f.x + 6, f.y - 12, 6, 4);
+  } else if (look === "pew") {
+    ctx.fillStyle = "#4a3428";
+    ctx.fillRect(f.x - 20, f.y - 4, 40, 10);
+    ctx.fillStyle = "#6b4a2b";
+    ctx.fillRect(f.x - 20, f.y - 14, 40, 6);
+    ctx.fillRect(f.x - 20, f.y - 14, 4, 16);
+    ctx.fillRect(f.x + 16, f.y - 14, 4, 16);
+  } else if (look === "locker") {
+    ctx.fillStyle = "#4a4a4c";
+    ctx.fillRect(f.x - 12, f.y - 20, 24, 32);
+    ctx.fillStyle = "#2a2a2c";
+    ctx.fillRect(f.x - 1, f.y - 18, 2, 28);
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(f.x - 8, f.y - 4, 3, 3);
+    ctx.fillRect(f.x + 5, f.y - 4, 3, 3);
+  } else if (look === "crate" || f.kind === "chest") {
+    ctx.fillStyle = "#6b4a2b";
+    ctx.fillRect(f.x - 12, f.y - 10, 24, 18);
+    ctx.fillStyle = "#8a6a3b";
+    ctx.fillRect(f.x - 12, f.y - 10, 24, 4);
+    ctx.fillStyle = "#3d2a1c";
+    ctx.fillRect(f.x - 1, f.y - 10, 2, 18);
+    ctx.fillRect(f.x - 12, f.y - 2, 24, 2);
+    if (f.kind === "chest") {
+      ctx.fillStyle = "#c9a227";
+      ctx.fillRect(f.x - 3, f.y - 2, 6, 4);
+    }
+  } else if (look === "lock" || f.kind === "lock") {
+    ctx.fillStyle = "#5a3e28";
+    ctx.fillRect(f.x - 10, f.y - 16, 20, 24);
+    ctx.fillStyle = "#3d2a1c";
+    ctx.fillRect(f.x - 8, f.y - 14, 16, 20);
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(f.x - 4, f.y - 6, 8, 7);
+    ctx.strokeStyle = "#c9a227";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y - 6, 3, Math.PI, 0);
+    ctx.stroke();
   } else if (f.kind === "door") {
     ctx.fillStyle = "#2a2d24";
     ctx.fillRect(f.x - 18, f.y - 4, 36, 12);
     ctx.fillStyle = "#6b5344";
     ctx.fillRect(f.x - 14, f.y - 2, 28, 8);
-  } else if (f.kind === "chest") {
-    ctx.fillStyle = "#8a6a3b";
-    ctx.fillRect(f.x - 10, f.y - 8, 20, 16);
-    ctx.fillStyle = "#c9a227";
-    ctx.fillRect(f.x - 2, f.y - 2, 4, 6);
   } else if (f.kind === "claim") {
     ctx.fillStyle = "#6a8a4e";
     ctx.fillRect(f.x - 3, f.y - 14, 4, 20);
@@ -351,8 +548,28 @@ function drawFurn(ctx: CanvasRenderingContext2D, f: { kind: string; x: number; y
   }
   if (f.searched) {
     ctx.strokeStyle = "rgba(230,225,208,0.35)";
-    ctx.strokeRect(f.x - 10, f.y - 10, 20, 20);
+    ctx.strokeRect(f.x - 12, f.y - 14, 24, 24);
   }
+}
+
+function inferLook(kind: string, label: string) {
+  const l = label.toLowerCase();
+  if (kind === "bench") return "bench";
+  if (kind === "bed") return l.includes("gurney") ? "gurney" : "bed";
+  if (kind === "lock") return "lock";
+  if (kind === "door") return "door";
+  if (kind === "claim") return "claim";
+  if (l.includes("shelf")) return "shelf";
+  if (l.includes("cabinet") || l.includes("closet") || l.includes("pharmacy") || l.includes("exam")) return "cabinet";
+  if (l.includes("kitchen") || l.includes("counter") || l.includes("vending")) return "counter";
+  if (l.includes("desk") || l.includes("office") || l.includes("drawer") || l.includes("lecture")) return "desk";
+  if (l.includes("pew")) return "pew";
+  if (l.includes("locker") || l.includes("cage") || l.includes("evidence")) return "locker";
+  if (l.includes("crate") || l.includes("stock") || l.includes("storage")) return "crate";
+  if (l.includes("dresser")) return "dresser";
+  if (l.includes("gurney")) return "gurney";
+  if (l.includes("bed") || l.includes("dorm")) return "bed";
+  return kind;
 }
 
 function inView(x: number, y: number, cam: Cam, vw: number, vh: number, pad: number) {
@@ -403,4 +620,8 @@ export function drawMinimap(ctx: CanvasRenderingContext2D, s: GameState, x: numb
   }
   ctx.fillStyle = "#c9c3b0";
   ctx.fillRect(x + s.player.x * sx - 2, y + s.player.y * sy - 2, 4, 4);
+  ctx.fillStyle = "#7a90b8";
+  for (const c of s.world.cars) {
+    ctx.fillRect(x + c.x * sx - 1, y + c.y * sy - 1, 2, 2);
+  }
 }

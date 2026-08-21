@@ -21,6 +21,9 @@ export type HudState = {
   buildingName: string;
   toast: string;
   time: number;
+  inCar: boolean;
+  gas: number;
+  gasMax: number;
   set: (p: Partial<HudState>) => void;
 };
 
@@ -42,5 +45,8 @@ export const useHud = create<HudState>((set) => ({
   buildingName: "",
   toast: "",
   time: 0,
+  inCar: false,
+  gas: 0,
+  gasMax: 120,
   set: (p) => set(p),
 }));
