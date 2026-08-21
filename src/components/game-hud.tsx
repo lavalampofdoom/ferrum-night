@@ -6,7 +6,7 @@ import { Link } from "@tanstack/react-router";
 import { Pause, Backpack, Hammer, DoorOpen } from "lucide-react";
 import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
-import { ITEMS, RECIPES, canCraft } from "@/game/items";
+import { ITEMS, RECIPES, canCraft, countItem } from "@/game/items";
 import { useHud } from "@/game/store";
 import { isPublicPages, publicUrl } from "@/lib/public-url";
 
@@ -56,6 +56,9 @@ export function GameHud({
             ) : null}
             <p className="mt-1 font-mono text-[11px] text-faint">
               {ITEMS[hud.weapon]?.name ?? "Hands"}
+              {ITEMS[hud.weapon]?.ammo
+                ? ` · ${countItem(hud.inv, ITEMS[hud.weapon]!.ammo!)} ${ITEMS[ITEMS[hud.weapon]!.ammo!]?.name ?? "ammo"}`
+                : ""}
               {hud.armor ? ` · ${ITEMS[hud.armor]?.name}` : ""}
             </p>
           </div>

@@ -40,7 +40,15 @@ export function SiteFooter() {
   return (
     <footer className="border-t border-border">
       <div className="mx-auto flex max-w-5xl flex-col gap-3 px-4 py-8 text-sm text-muted sm:flex-row sm:items-center sm:justify-between sm:px-6">
-        <p>Ferrum Night · free in any browser · Ferrum to Rocky Mount, Virginia</p>
+        <p>
+          Ferrum Night · free in any browser · Ferrum to Rocky Mount, Virginia
+          <span className="mt-1 block text-xs text-faint">
+            Roads and buildings from{" "}
+            <a className="underline decoration-border hover:text-fg" href="https://www.openstreetmap.org/copyright">
+              OpenStreetMap
+            </a>
+          </span>
+        </p>
         <nav className="flex gap-4">
           <Link to="/play" className="hover:text-fg">
             Play

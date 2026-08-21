@@ -1,4 +1,15 @@
-import { BLOCKED, geoToTile, geoToWorld, MAP_H, MAP_W, T, TILE, type TileId } from "./constants";
+import {
+  geoToTile,
+  geoToWorld,
+  MAP_H,
+  MAP_W,
+  SOLID_CELL,
+  T,
+  TILE,
+  TREE_RADIUS,
+  type TileId,
+} from "./constants";
+import { HOUSES, LANDMARKS, ROADS, STREETS, WATERWAYS, type GeoPlace, type GeoRoad } from "./geo-data";
 import { fbm, hash2, mulberry32 } from "./rng";
 
 export type BldKind =
@@ -55,12 +66,33 @@ export type Zombie = {
   facing: number;
   vx: number;
   vy: number;
+  walk: number;
   attackCd: number;
   wanderT: number;
   wx: number;
   wy: number;
   hitT: number;
   alive: boolean;
+  brute: boolean;
+  paintT: number;
+};
+
+export type CritterKind = "doe" | "buck" | "fawn" | "bear" | "cub" | "turkey" | "squirrel";
+
+export type Critter = {
+  id: number;
+  kind: CritterKind;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  facing: number;
+  walk: number;
+  hp: number;
+  alive: boolean;
+  pack: number;
+  follow: number;
+  dashT: number;
 };
 
 export type Interact = {
@@ -91,8 +123,11 @@ export type World = {
   trees: Tree[];
   props: Prop[];
   zombies: Zombie[];
+  critters: Critter[];
   startX: number;
   startY: number;
+  gridW: number;
+  treeGrid: number[][];
 };
 
 const W = MAP_W;
@@ -114,17 +149,51 @@ function stamp(tiles: Uint8Array, tx: number, ty: number, t: TileId, r = 0) {
   }
 }
 
-function paintRoad(tiles: Uint8Array, blocked: Uint8Array, ax: number, ay: number, bx: number, by: number, width = 2) {
+function paintRoad(tiles: Uint8Array, ax: number, ay: number, bx: number, by: number, width = 2) {
   const dx = bx - ax;
   const dy = by - ay;
-  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) * 2));
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) * 3));
+  const asphaltW = Math.max(0, width);
+  const shoulder = asphaltW + 1;
   for (let i = 0; i <= steps; i++) {
     const x = Math.round(ax + (dx * i) / steps);
     const y = Math.round(ay + (dy * i) / steps);
-    stamp(tiles, x, y, T.ASPHALT, width);
-    if (width >= 2 && i % 3 === 0) stamp(tiles, x, y, T.LINE, 0);
+    for (let oy = y - shoulder; oy <= y + shoulder; oy++) {
+      for (let ox = x - shoulder; ox <= x + shoulder; ox++) {
+        if (!inMap(ox, oy)) continue;
+        const t = tiles[idx(ox, oy)]!;
+        if (t === T.GRASS || t === T.TALL || t === T.FOREST || t === T.CROP) {
+          tiles[idx(ox, oy)] = T.DIRT;
+        }
+      }
+    }
+    stamp(tiles, x, y, T.ASPHALT, asphaltW);
+    if (asphaltW >= 1 && i % 2 === 0) stamp(tiles, x, y, T.LINE, 0);
   }
-  void blocked;
+}
+
+function paintPoly(tiles: Uint8Array, road: GeoRoad, asWater = false) {
+  const p = road.pts;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const a = geoToTile(p[i]!, p[i + 1]!);
+    const b = geoToTile(p[i + 2]!, p[i + 3]!);
+    if (asWater) {
+      const dx = b.tx - a.tx;
+      const dy = b.ty - a.ty;
+      const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) * 2));
+      for (let s = 0; s <= steps; s++) {
+        stamp(
+          tiles,
+          Math.round(a.tx + (dx * s) / steps),
+          Math.round(a.ty + (dy * s) / steps),
+          T.WATER,
+          1,
+        );
+      }
+    } else {
+      paintRoad(tiles, a.tx, a.ty, b.tx, b.ty, Math.max(1, road.w));
+    }
+  }
 }
 
 function parking(tiles: Uint8Array, tx: number, ty: number, w: number, h: number) {
@@ -135,238 +204,66 @@ function parking(tiles: Uint8Array, tx: number, ty: number, w: number, h: number
   }
 }
 
-type Landmark = {
-  id: string;
-  kind: BldKind;
-  name: string;
-  address: string;
-  lat: number;
-  lng: number;
-  claimable: boolean;
-  lootTable: string;
-  zone: Building["zone"];
-  tw: number;
-  th: number;
-};
+function clampSize(kind: BldKind, tw: number, th: number): { tw: number; th: number } {
+  const max: Record<BldKind, [number, number]> = {
+    house: [2, 2],
+    ranch: [3, 2],
+    clinic: [4, 3],
+    kfc: [3, 3],
+    lowes: [5, 4],
+    courthouse: [4, 4],
+    college: [3, 3],
+    church: [3, 4],
+    gas: [3, 2],
+  };
+  const [mw, mh] = max[kind];
+  return { tw: Math.min(Math.max(tw, 2), mw), th: Math.min(Math.max(th, 2), mh) };
+}
 
-const LANDMARKS: Landmark[] = [
-  {
-    id: "clinic",
-    kind: "clinic",
-    name: "Tri-Area Community Health",
-    address: "180 Ferrum Mountain Rd",
-    lat: 36.9255,
-    lng: -80.018,
-    claimable: true,
-    lootTable: "clinic",
-    zone: "ferrum",
-    tw: 6,
-    th: 5,
-  },
-  {
-    id: "college",
-    kind: "college",
-    name: "Ferrum College — Main Hall",
-    address: "445 Ferrum Mountain Rd",
-    lat: 36.9228,
-    lng: -80.0215,
-    claimable: false,
-    lootTable: "college",
-    zone: "ferrum",
-    tw: 9,
-    th: 5,
-  },
-  {
-    id: "college2",
-    kind: "college",
-    name: "Vaughn Chapel",
-    address: "Ferrum College",
-    lat: 36.924,
-    lng: -80.0235,
-    claimable: false,
-    lootTable: "college",
-    zone: "ferrum",
-    tw: 7,
-    th: 4,
-  },
-  {
-    id: "church-ferrum",
-    kind: "church",
-    name: "Fairview Church",
-    address: "Franklin St, Ferrum",
-    lat: 36.9272,
-    lng: -80.0145,
-    claimable: false,
-    lootTable: "church",
-    zone: "ferrum",
-    tw: 4,
-    th: 6,
-  },
-  {
-    id: "ferrum-store",
-    kind: "gas",
-    name: "Ferrum General",
-    address: "Franklin St (VA-40)",
-    lat: 36.9266,
-    lng: -80.0112,
-    claimable: false,
-    lootTable: "store",
-    zone: "ferrum",
-    tw: 5,
-    th: 4,
-  },
-  {
-    id: "fairy-1576",
-    kind: "house",
-    name: "Farmhouse",
-    address: "1576 Fairy Stone Park Rd",
-    lat: 36.912,
-    lng: -80.085,
-    claimable: true,
-    lootTable: "house",
-    zone: "rural",
-    tw: 4,
-    th: 4,
-  },
-  {
-    id: "lowes",
-    kind: "lowes",
-    name: "Lowe's Home Improvement",
-    address: "800 Old Franklin Tpke",
-    lat: 36.9945,
-    lng: -79.918,
-    claimable: false,
-    lootTable: "lowes",
-    zone: "town",
-    tw: 10,
-    th: 6,
-  },
-  {
-    id: "courthouse",
-    kind: "courthouse",
-    name: "Franklin County Courthouse",
-    address: "Main St, Rocky Mount",
-    lat: 36.9978,
-    lng: -79.8918,
-    claimable: false,
-    lootTable: "civic",
-    zone: "town",
-    tw: 6,
-    th: 7,
-  },
-  {
-    id: "kfc",
-    kind: "kfc",
-    name: "KFC",
-    address: "1775 N Main St",
-    lat: 37.0105,
-    lng: -79.888,
-    claimable: false,
-    lootTable: "kfc",
-    zone: "town",
-    tw: 6,
-    th: 5,
-  },
-  {
-    id: "gas-rm",
-    kind: "gas",
-    name: "Goode Hwy Fuel",
-    address: "N Main St, Rocky Mount",
-    lat: 37.004,
-    lng: -79.8895,
-    claimable: false,
-    lootTable: "gas",
-    zone: "town",
-    tw: 5,
-    th: 4,
-  },
-  {
-    id: "grocery",
-    kind: "college",
-    name: "Franklin Marketplace",
-    address: "Franklin St, Rocky Mount",
-    lat: 36.9962,
-    lng: -79.905,
-    claimable: false,
-    lootTable: "store",
-    zone: "town",
-    tw: 7,
-    th: 5,
-  },
-];
+function overlaps(buildings: Building[], x: number, y: number, w: number, h: number): boolean {
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const minD = Math.max(58, (w + h) / 2);
+  for (const b of buildings) {
+    const d = Math.hypot(cx - (b.x + b.w / 2), cy - (b.y + b.h / 2));
+    if (d < minD) return true;
+  }
+  return false;
+}
 
-/** Simplified real-road polylines in lat/lng. */
-const ROADS: { pts: [number, number][]; w: number }[] = [
-  // VA-40 / Franklin St / Old Franklin Tpke: Ferrum → Rocky Mount
-  {
-    w: 2,
-    pts: [
-      [36.922, -80.04],
-      [36.9248, -80.024],
-      [36.9262, -80.018],
-      [36.9268, -80.012],
-      [36.93, -79.995],
-      [36.938, -79.978],
-      [36.952, -79.96],
-      [36.968, -79.942],
-      [36.982, -79.93],
-      [36.9945, -79.918],
-      [36.9968, -79.905],
-      [36.9975, -79.892],
-    ],
-  },
-  // Fairy Stone Park Rd (VA-57) west of Ferrum
-  {
-    w: 1,
-    pts: [
-      [36.926, -80.02],
-      [36.921, -80.045],
-      [36.916, -80.065],
-      [36.912, -80.085],
-      [36.906, -80.11],
-    ],
-  },
-  // Ferrum Mountain Rd
-  {
-    w: 1,
-    pts: [
-      [36.908, -80.014],
-      [36.918, -80.016],
-      [36.9255, -80.018],
-      [36.932, -80.02],
-      [36.942, -80.022],
-    ],
-  },
-  // US-220 / N Main St Rocky Mount
-  {
-    w: 2,
-    pts: [
-      [36.972, -79.892],
-      [36.986, -79.8915],
-      [36.9978, -79.8918],
-      [37.0105, -79.888],
-      [37.028, -79.885],
-    ],
-  },
-  // Secondary: Tanyard / Pell area
-  {
-    w: 1,
-    pts: [
-      [36.9975, -79.892],
-      [37.002, -79.9],
-      [37.006, -79.91],
-    ],
-  },
-  // Grassy Hill Rd-ish
-  {
-    w: 1,
-    pts: [
-      [36.9945, -79.918],
-      [37.002, -79.92],
-      [37.012, -79.922],
-    ],
-  },
-];
+function placeFrom(lm: GeoPlace, buildings: Building[], tiles: Uint8Array, blocked: Uint8Array, force: boolean) {
+  const p = geoToWorld(lm.lat, lm.lng);
+  const { tw, th } = clampSize(lm.kind, lm.tw, lm.th);
+  const w = tw * TILE;
+  const h = th * TILE;
+  const x = p.x - w / 2;
+  const y = p.y - h / 2;
+  if (x < 16 || y < 16 || x + w > W * TILE - 16 || y + h > H * TILE - 16) return;
+  if (!force && overlaps(buildings, x, y, w, h)) return;
+  const b: Building = {
+    id: lm.id,
+    kind: lm.kind,
+    name: lm.name,
+    address: lm.address,
+    x,
+    y,
+    w,
+    h,
+    doorX: x + w / 2,
+    doorY: y + h + 6,
+    claimable: lm.claimable,
+    claimed: false,
+    lootTable: lm.loot,
+    zone: lm.zone,
+  };
+  buildings.push(b);
+  footprint(tiles, blocked, b);
+  if (lm.kind === "kfc" || lm.kind === "lowes" || lm.kind === "gas" || lm.kind === "clinic") {
+    const t0 = Math.floor((b.x - 8) / TILE);
+    const t1 = Math.floor((b.y + b.h) / TILE);
+    parking(tiles, t0, t1, Math.ceil(b.w / TILE) + 1, 3);
+  }
+}
 
 export function generateWorld(seed = 40): World {
   const rng = mulberry32(seed);
@@ -377,7 +274,6 @@ export function generateWorld(seed = 40): World {
     for (let x = 0; x < W; x++) {
       const n = fbm(x / 28, y / 28, seed);
       const west = x / W;
-      // West (Fairy Stone) is deep forest; east (Rocky Mount) opens up
       const forestBias = 0.62 - west * 0.35;
       let t: TileId = T.GRASS;
       if (n > forestBias) t = T.FOREST;
@@ -387,158 +283,14 @@ export function generateWorld(seed = 40): World {
     }
   }
 
-  // Maggodee / Pigg creek near Ferrum
-  for (let i = 0; i < 220; i++) {
-    const t = i / 220;
-    const lng = -80.09 + t * 0.09;
-    const lat = 36.91 + Math.sin(t * 6) * 0.008 + t * 0.012;
-    const p = geoToTile(lat, lng);
-    stamp(tiles, p.tx, p.ty, T.WATER, 1);
-  }
-
-  for (const road of ROADS) {
-    for (let i = 0; i < road.pts.length - 1; i++) {
-      const a = geoToTile(road.pts[i]![0], road.pts[i]![1]);
-      const b = geoToTile(road.pts[i + 1]![0], road.pts[i + 1]![1]);
-      paintRoad(tiles, blocked, a.tx, a.ty, b.tx, b.ty, road.w);
-    }
-  }
-
-  // Rocky Mount street grid
-  const rm0 = geoToTile(36.988, -79.905);
-  const rm1 = geoToTile(37.018, -79.878);
-  for (let y = Math.min(rm0.ty, rm1.ty); y <= Math.max(rm0.ty, rm1.ty); y += 5) {
-    for (let x = Math.min(rm0.tx, rm1.tx); x <= Math.max(rm0.tx, rm1.tx); x++) {
-      if (inMap(x, y)) tiles[idx(x, y)] = T.ASPHALT;
-    }
-  }
-  for (let x = Math.min(rm0.tx, rm1.tx); x <= Math.max(rm0.tx, rm1.tx); x += 6) {
-    for (let y = Math.min(rm0.ty, rm1.ty); y <= Math.max(rm0.ty, rm1.ty); y++) {
-      if (inMap(x, y)) tiles[idx(x, y)] = T.WALK;
-    }
-  }
+  for (const creek of WATERWAYS) paintPoly(tiles, creek, true);
+  for (const road of ROADS) paintPoly(tiles, road, false);
+  for (const road of STREETS) paintPoly(tiles, road, false);
 
   const buildings: Building[] = [];
+  for (const lm of LANDMARKS) placeFrom(lm, buildings, tiles, blocked, true);
+  for (const h of HOUSES) placeFrom(h, buildings, tiles, blocked, false);
 
-  const placeB = (lm: Landmark, jitter = 0) => {
-    const p = geoToWorld(lm.lat, lm.lng);
-    const x = p.x + (rng() - 0.5) * jitter;
-    const y = p.y + (rng() - 0.5) * jitter;
-    const w = lm.tw * TILE;
-    const h = lm.th * TILE;
-    const b: Building = {
-      id: lm.id,
-      kind: lm.kind,
-      name: lm.name,
-      address: lm.address,
-      x: x - w / 2,
-      y: y - h / 2,
-      w,
-      h,
-      doorX: x,
-      doorY: y + h / 2 + 6,
-      claimable: lm.claimable,
-      claimed: false,
-      lootTable: lm.lootTable,
-      zone: lm.zone,
-    };
-    buildings.push(b);
-    footprint(tiles, blocked, b);
-    if (lm.kind === "kfc" || lm.kind === "lowes" || lm.kind === "gas") {
-      const t0 = Math.floor((b.x - 20) / TILE);
-      const t1 = Math.floor((b.y + b.h) / TILE);
-      parking(tiles, t0, t1, Math.ceil(b.w / TILE) + 2, 4);
-    }
-  };
-
-  for (const lm of LANDMARKS) placeB(lm);
-
-  // Houses along Ferrum Mountain Rd and rural VA-40
-  const houseRoads: [number, number][][] = [
-    ROADS[2]!.pts,
-    ROADS[1]!.pts,
-    ROADS[0]!.pts.slice(0, 8),
-  ];
-  let hid = 0;
-  for (const pts of houseRoads) {
-    for (let i = 0; i < pts.length - 1; i++) {
-      const a = pts[i]!;
-      const b = pts[i + 1]!;
-      for (let s = 0.15; s < 0.9; s += 0.22) {
-        const lat = a[0] + (b[0] - a[0]) * s;
-        const lng = a[1] + (b[1] - a[1]) * s;
-        const p = geoToWorld(lat, lng);
-        const side = rng() < 0.5 ? -1 : 1;
-        const dx = b[1] - a[1];
-        const dy = a[0] - b[0];
-        const len = Math.hypot(dx, dy) || 1;
-        const ox = (dx / len) * 48 * side;
-        const oy = (dy / len) * 900 * side; // lat offset scaled roughly
-        void oy;
-        const kind: BldKind = rng() < 0.35 ? "ranch" : "house";
-        const tw = kind === "ranch" ? 5 : 4;
-        const th = 4;
-        const bx = p.x + ox - (tw * TILE) / 2;
-        const by = p.y + side * 56 - (th * TILE) / 2;
-        if (bx < 40 || by < 40 || bx > W * TILE - 80 || by > H * TILE - 80) continue;
-        if (buildings.some((b0) => Math.hypot(b0.x - bx, b0.y - by) < 70)) continue;
-        hid++;
-        const house: Building = {
-          id: `house-${hid}`,
-          kind,
-          name: kind === "ranch" ? "Brick Ranch" : "Farmhouse",
-          address: ruralAddress(lat, lng, hid),
-          x: bx,
-          y: by,
-          w: tw * TILE,
-          h: th * TILE,
-          doorX: bx + (tw * TILE) / 2,
-          doorY: by + th * TILE + 4,
-          claimable: true,
-          claimed: false,
-          lootTable: "house",
-          zone: lng < -80.03 ? "rural" : "ferrum",
-        };
-        buildings.push(house);
-        footprint(tiles, blocked, house);
-        const drive = geoToTile(lat, lng);
-        stamp(tiles, drive.tx + side * 2, drive.ty, T.DIRT, 1);
-      }
-    }
-  }
-
-  // Rocky Mount residential grid
-  let rid = 0;
-  for (let gy = Math.min(rm0.ty, rm1.ty) + 2; gy < Math.max(rm0.ty, rm1.ty) - 2; gy += 5) {
-    for (let gx = Math.min(rm0.tx, rm1.tx) + 2; gx < Math.max(rm0.tx, rm1.tx) - 2; gx += 6) {
-      if (rng() > 0.55) continue;
-      const kind: BldKind = rng() < 0.5 ? "ranch" : "house";
-      const bx = gx * TILE + 8;
-      const by = gy * TILE + 6;
-      if (buildings.some((b0) => Math.abs(b0.x - bx) < 50 && Math.abs(b0.y - by) < 50)) continue;
-      rid++;
-      const house: Building = {
-        id: `rm-${rid}`,
-        kind,
-        name: "Town House",
-        address: `${1700 + rid} N Main St area`,
-        x: bx,
-        y: by,
-        w: 4 * TILE,
-        h: 3 * TILE,
-        doorX: bx + 2 * TILE,
-        doorY: by + 3 * TILE + 4,
-        claimable: true,
-        claimed: false,
-        lootTable: "house",
-        zone: "town",
-      };
-      buildings.push(house);
-      footprint(tiles, blocked, house);
-    }
-  }
-
-  // Trees
   const trees: Tree[] = [];
   let tid = 0;
   for (let y = 2; y < H - 2; y += 2) {
@@ -563,21 +315,30 @@ export function generateWorld(seed = 40): World {
   let pid = 0;
   const propKinds = ["mailbox", "crate", "barrel", "bush", "dumpster", "tires", "fence", "hydrant", "truck"];
   for (const b of buildings) {
-    if (rng() > 0.55) continue;
+    if (rng() > 0.5) continue;
     pid++;
     const k = propKinds[Math.floor(rng() * propKinds.length)]!;
     props.push({
       id: pid,
-      x: b.doorX + (rng() - 0.5) * 40,
-      y: b.doorY + 18 + rng() * 10,
+      x: b.doorX + (rng() - 0.5) * 36,
+      y: b.doorY + 16 + rng() * 10,
       kind: k,
-      solid: k === "truck" || k === "dumpster" || k === "barrel",
+      solid: k === "truck" || k === "dumpster" || k === "barrel" || k === "hydrant",
     });
   }
 
-  // Block water
   for (let i = 0; i < tiles.length; i++) {
     if (tiles[i] === T.WATER) blocked[i] = 1;
+  }
+
+  const gridW = Math.ceil((W * TILE) / SOLID_CELL);
+  const gridH = Math.ceil((H * TILE) / SOLID_CELL);
+  const treeGrid: number[][] = Array.from({ length: gridW * gridH }, () => []);
+  for (let i = 0; i < trees.length; i++) {
+    const t = trees[i]!;
+    const cx = Math.max(0, Math.min(gridW - 1, Math.floor(t.x / SOLID_CELL)));
+    const cy = Math.max(0, Math.min(gridH - 1, Math.floor(t.y / SOLID_CELL)));
+    treeGrid[cy * gridW + cx]!.push(i);
   }
 
   const zombies: Zombie[] = [];
@@ -590,7 +351,9 @@ export function generateWorld(seed = 40): World {
       const wy = y * TILE + rng() * TILE * 3;
       if (blockedAt(blocked, wx, wy)) continue;
       zid++;
-      const hp = 28 + Math.floor(rng() * 18);
+      const town = densityAt(x, y) > 0.2;
+      const brute = rng() < (town ? 0.055 : 0.028);
+      const hp = brute ? 150 + Math.floor(rng() * 40) : 56 + Math.floor(rng() * 44);
       zombies.push({
         id: zid,
         x: wx,
@@ -600,19 +363,23 @@ export function generateWorld(seed = 40): World {
         facing: Math.floor(rng() * 4),
         vx: 0,
         vy: 0,
+        walk: rng() * 4,
         attackCd: 0,
         wanderT: rng() * 4,
         wx,
         wy,
         hitT: 0,
         alive: true,
+        brute,
+        paintT: 0,
       });
     }
   }
 
   const clinic = buildings.find((b) => b.id === "clinic");
-  const startX = clinic?.doorX ?? 4670;
-  const startY = (clinic?.doorY ?? 5780) + 48;
+  const startX = clinic?.doorX ?? geoToWorld(36.92611, -80.01912).x;
+  const startY = (clinic?.doorY ?? geoToWorld(36.92611, -80.01912).y) + 40;
+  const critters = spawnWildlife(rng, blocked, tiles, seed);
   return {
     tiles,
     blocked,
@@ -620,15 +387,12 @@ export function generateWorld(seed = 40): World {
     trees,
     props,
     zombies,
+    critters,
     startX,
     startY,
+    gridW,
+    treeGrid,
   };
-}
-
-function ruralAddress(lat: number, lng: number, n: number): string {
-  if (lng < -80.05) return `${1400 + n} Fairy Stone Park Rd`;
-  if (lng < -80.01) return `${100 + n} Ferrum Mountain Rd`;
-  return `Franklin St near ${n}`;
 }
 
 function footprint(tiles: Uint8Array, blocked: Uint8Array, b: Building) {
@@ -637,30 +401,156 @@ function footprint(tiles: Uint8Array, blocked: Uint8Array, b: Building) {
   const x1 = Math.ceil((b.x + b.w) / TILE);
   const y1 = Math.ceil((b.y + b.h) / TILE);
   const doorTx = Math.floor(b.doorX / TILE);
-  const doorTy = Math.floor(b.doorY / TILE);
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       if (!inMap(x, y)) continue;
       const isDoor = Math.abs(x - doorTx) <= 1 && y >= y1 - 1;
       if (!isDoor) blocked[idx(x, y)] = 1;
-      if (tiles[idx(x, y)] !== T.ASPHALT && tiles[idx(x, y)] !== T.PARKING) {
+      const cur = tiles[idx(x, y)];
+      if (cur !== T.ASPHALT && cur !== T.PARKING && cur !== T.LINE) {
         tiles[idx(x, y)] = T.DIRT;
       }
     }
   }
-  void doorTy;
 }
 
 function densityAt(tx: number, ty: number): number {
-  const rm = geoToTile(36.998, -79.892);
-  const fe = geoToTile(36.926, -80.016);
+  const rm = geoToTile(36.997, -79.890);
+  const fe = geoToTile(36.9215, -80.0115);
+  const campus = geoToTile(36.9275, -80.0215);
+  const strip = geoToTile(37.014, -79.865);
   const dRm = Math.hypot(tx - rm.tx, ty - rm.ty);
   const dFe = Math.hypot(tx - fe.tx, ty - fe.ty);
-  if (dRm < 18) return 0.55;
-  if (dRm < 36) return 0.28;
-  if (dFe < 14) return 0.18;
-  if (tx < 90) return 0.015;
-  return 0.04;
+  const dCa = Math.hypot(tx - campus.tx, ty - campus.ty);
+  const dSt = Math.hypot(tx - strip.tx, ty - strip.ty);
+  if (dRm < 16) return 0.58;
+  if (dRm < 32) return 0.3;
+  if (dSt < 14) return 0.42;
+  if (dFe < 10 || dCa < 10) return 0.2;
+  if (tx < 90) return 0.014;
+  return 0.038;
+}
+
+const CRITTER_HP: Record<CritterKind, number> = {
+  doe: 28,
+  buck: 36,
+  fawn: 14,
+  bear: 480,
+  cub: 220,
+  turkey: 12,
+  squirrel: 4,
+};
+
+function critterWalkable(blocked: Uint8Array, tiles: Uint8Array, x: number, y: number): boolean {
+  if (blockedAt(blocked, x, y)) return false;
+  const t = tileAt(tiles, x, y);
+  return t !== T.WATER && t !== T.ASPHALT && t !== T.LINE && t !== T.PARKING && t !== T.WALL;
+}
+
+function scatterPoint(
+  rng: () => number,
+  blocked: Uint8Array,
+  tiles: Uint8Array,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  preferCover: boolean,
+): { x: number; y: number } | null {
+  for (let i = 0; i < 55; i++) {
+    const x = x0 + rng() * (x1 - x0);
+    const y = y0 + rng() * (y1 - y0);
+    if (!critterWalkable(blocked, tiles, x, y)) continue;
+    if (preferCover) {
+      const t = tileAt(tiles, x, y);
+      if (t !== T.FOREST && t !== T.TALL && rng() > 0.4) continue;
+    }
+    return { x, y };
+  }
+  return null;
+}
+
+function spawnWildlife(rng: () => number, blocked: Uint8Array, tiles: Uint8Array, _seed: number): Critter[] {
+  const out: Critter[] = [];
+  let id = 0;
+  const mapW = W * TILE;
+  const mapH = H * TILE;
+  const west = geoToWorld(36.908, -80.086);
+  const ferrum = geoToWorld(36.922, -80.012);
+
+  const add = (kind: CritterKind, x: number, y: number, pack = 0, follow = 0) => {
+    id += 1;
+    out.push({
+      id,
+      kind,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      facing: 0,
+      walk: 0,
+      hp: CRITTER_HP[kind],
+      alive: true,
+      pack,
+      follow,
+      dashT: 0,
+    });
+    return id;
+  };
+
+  const sowAt =
+    scatterPoint(rng, blocked, tiles, west.x - 180, west.y - 180, west.x + 260, west.y + 260, true) ??
+    scatterPoint(rng, blocked, tiles, 180, mapH * 0.55, mapW * 0.28, mapH * 0.92, true);
+  if (sowAt) {
+    const sowId = add("bear", sowAt.x, sowAt.y, 1, 0);
+    for (let i = 0; i < 2; i++) {
+      const cx = sowAt.x + (rng() - 0.5) * 40;
+      const cy = sowAt.y + 16 + rng() * 18;
+      const ok = critterWalkable(blocked, tiles, cx, cy);
+      add("cub", ok ? cx : sowAt.x + 8 * (i + 1), ok ? cy : sowAt.y + 12, 1, sowId);
+    }
+  }
+
+  for (let g = 0; g < 7; g++) {
+    const at = scatterPoint(rng, blocked, tiles, 80, 80, mapW * 0.58, mapH - 80, true);
+    if (!at) continue;
+    const doeId = add("doe", at.x, at.y, 10 + g, 0);
+    const fawns = rng() > 0.4 ? 2 : 1;
+    for (let f = 0; f < fawns; f++) {
+      add("fawn", at.x + (rng() - 0.5) * 22, at.y + 12 + rng() * 14, 10 + g, doeId);
+    }
+  }
+
+  for (let g = 0; g < 6; g++) {
+    const at = scatterPoint(rng, blocked, tiles, 80, 80, mapW * 0.72, mapH - 80, true);
+    if (at) add("buck", at.x, at.y);
+  }
+
+  for (let g = 0; g < 4; g++) {
+    const at = scatterPoint(
+      rng,
+      blocked,
+      tiles,
+      ferrum.x - 500,
+      ferrum.y - 280,
+      ferrum.x + 900,
+      ferrum.y + 700,
+      false,
+    );
+    if (!at) continue;
+    const n = 4 + Math.floor(rng() * 3);
+    const lead = add("turkey", at.x, at.y, 20 + g, 0);
+    for (let i = 1; i < n; i++) {
+      add("turkey", at.x + (rng() - 0.5) * 44, at.y + (rng() - 0.5) * 44, 20 + g, lead);
+    }
+  }
+
+  for (let g = 0; g < 28; g++) {
+    const at = scatterPoint(rng, blocked, tiles, 60, 60, mapW - 60, mapH - 60, true);
+    if (at) add("squirrel", at.x, at.y);
+  }
+
+  return out;
 }
 
 export function blockedAt(blocked: Uint8Array, x: number, y: number, w = W): boolean {
@@ -677,6 +567,37 @@ export function tileAt(tiles: Uint8Array, x: number, y: number, w = W): number {
   return tiles[ty * w + tx]!;
 }
 
+export function solidHit(world: World, x: number, y: number, r: number): boolean {
+  const gw = world.gridW;
+  const gh = Math.floor(world.treeGrid.length / gw);
+  const x0 = Math.max(0, Math.floor((x - r - TREE_RADIUS) / SOLID_CELL));
+  const x1 = Math.min(gw - 1, Math.floor((x + r + TREE_RADIUS) / SOLID_CELL));
+  const y0 = Math.max(0, Math.floor((y - r - TREE_RADIUS) / SOLID_CELL));
+  const y1 = Math.min(gh - 1, Math.floor((y + r + TREE_RADIUS) / SOLID_CELL));
+  const r2 = (r + TREE_RADIUS) * (r + TREE_RADIUS);
+  for (let cy = y0; cy <= y1; cy++) {
+    for (let cx = x0; cx <= x1; cx++) {
+      const cell = world.treeGrid[cy * gw + cx];
+      if (!cell) continue;
+      for (const i of cell) {
+        const t = world.trees[i];
+        if (!t || t.chopped) continue;
+        const dx = t.x - x;
+        const dy = t.y - y;
+        if (dx * dx + dy * dy < r2) return true;
+      }
+    }
+  }
+  for (const p of world.props) {
+    if (!p.solid) continue;
+    const pr = p.kind === "truck" ? 14 : 8;
+    const dx = p.x - x;
+    const dy = p.y - y;
+    if (dx * dx + dy * dy < (r + pr) * (r + pr)) return true;
+  }
+  return false;
+}
+
 export function locationName(world: World, x: number, y: number): string {
   let best = world.buildings[0];
   let bd = Infinity;
@@ -687,22 +608,302 @@ export function locationName(world: World, x: number, y: number): string {
       best = b;
     }
   }
-  if (best && bd < 140) return `${best.name} — ${best.address}`;
-  const fe = geoToWorld(36.926, -80.016);
-  const rm = geoToWorld(36.998, -79.892);
-  const fs = geoToWorld(36.912, -80.085);
-  const dFe = Math.hypot(fe.x - x, fe.y - y);
-  const dRm = Math.hypot(rm.x - x, rm.y - y);
-  const dFs = Math.hypot(fs.x - x, fs.y - y);
-  if (dFs < 420) return "Fairy Stone Park Rd";
-  if (dFe < 380) return "Ferrum, VA";
-  if (dRm < 520) return "Rocky Mount, VA";
+  if (best && bd < 120) return `${best.name} — ${best.address}`;
+  const fe = geoToWorld(36.9215, -80.0115);
+  const campus = geoToWorld(36.9275, -80.0215);
+  const rm = geoToWorld(36.9965, -79.8915);
+  const oftp = geoToWorld(37.0135, -79.8645);
+  const fs = geoToWorld(36.905, -80.09);
+  const main = geoToWorld(37.01, -79.889);
+  if (Math.hypot(campus.x - x, campus.y - y) < 280) return "Ferrum College";
+  if (Math.hypot(fe.x - x, fe.y - y) < 260) return "Ferrum, VA";
+  if (Math.hypot(rm.x - x, rm.y - y) < 300) return "Downtown Rocky Mount";
+  if (Math.hypot(oftp.x - x, oftp.y - y) < 280) return "Old Franklin Turnpike";
+  if (Math.hypot(main.x - x, main.y - y) < 260) return "N Main Street, Rocky Mount";
+  if (Math.hypot(fs.x - x, fs.y - y) < 420) return "Fairy Stone Park Rd";
+  const geoY = geoToWorld(36.95, -80.03);
+  if (x < geoY.x && y > geoToWorld(36.94, -80.02).y) return "Ferrum Mountain Rd";
   return "Franklin County backroads";
 }
 
+export type InteriorLayout =
+  | "house"
+  | "ranch"
+  | "shop"
+  | "clinic"
+  | "church"
+  | "civic"
+  | "warehouse"
+  | "college"
+  | "hall"
+  | "school";
+
+export function interiorSpec(b: Building): { w: number; h: number; layout: InteriorLayout } {
+  switch (b.id) {
+    case "college":
+    case "college-lib":
+      return { w: 42, h: 30, layout: "college" };
+    case "lowes":
+    case "walmart":
+      return { w: 32, h: 22, layout: "warehouse" };
+    case "courthouse":
+      return { w: 24, h: 16, layout: "civic" };
+    case "clinic":
+      return { w: 20, h: 14, layout: "clinic" };
+    case "hospital":
+      return { w: 22, h: 16, layout: "clinic" };
+    case "fchs":
+    case "ferrum-elem":
+      return { w: 28, h: 18, layout: "school" };
+    case "foodlion":
+      return { w: 22, h: 16, layout: "warehouse" };
+    case "harvester":
+      return { w: 18, h: 14, layout: "civic" };
+    default:
+      break;
+  }
+  switch (b.kind) {
+    case "house":
+      return { w: 10, h: 8, layout: "house" };
+    case "ranch":
+      return { w: 14, h: 10, layout: "ranch" };
+    case "gas":
+      return { w: 12, h: 9, layout: "shop" };
+    case "kfc":
+      return { w: 14, h: 10, layout: "shop" };
+    case "church":
+      return { w: 14, h: 18, layout: "church" };
+    case "clinic":
+      return { w: 18, h: 12, layout: "clinic" };
+    case "courthouse":
+      return { w: 20, h: 14, layout: "civic" };
+    case "lowes":
+      return { w: 28, h: 18, layout: "warehouse" };
+    case "college":
+      return b.zone === "ferrum" ? { w: 22, h: 16, layout: "hall" } : { w: 18, h: 14, layout: "school" };
+    default:
+      return { w: 12, h: 10, layout: "house" };
+  }
+}
+
+function setWall(tiles: Uint8Array, blocked: Uint8Array, w: number, h: number, x: number, y: number) {
+  if (x <= 0 || y <= 0 || x >= w - 1 || y >= h - 1) return;
+  tiles[y * w + x] = T.WALL;
+  blocked[y * w + x] = 1;
+}
+
+function setOpen(tiles: Uint8Array, blocked: Uint8Array, w: number, x: number, y: number) {
+  tiles[y * w + x] = T.WOOD;
+  blocked[y * w + x] = 0;
+}
+
+function vWall(
+  tiles: Uint8Array,
+  blocked: Uint8Array,
+  w: number,
+  h: number,
+  x: number,
+  y0: number,
+  y1: number,
+  doors: number[],
+) {
+  for (let y = y0; y <= y1; y++) {
+    if (doors.includes(y) || doors.includes(y - 1)) setOpen(tiles, blocked, w, x, y);
+    else setWall(tiles, blocked, w, h, x, y);
+  }
+}
+
+function hWall(
+  tiles: Uint8Array,
+  blocked: Uint8Array,
+  w: number,
+  h: number,
+  y: number,
+  x0: number,
+  x1: number,
+  doors: number[],
+) {
+  for (let x = x0; x <= x1; x++) {
+    if (doors.includes(x) || doors.includes(x - 1)) setOpen(tiles, blocked, w, x, y);
+    else setWall(tiles, blocked, w, h, x, y);
+  }
+}
+
+function placeLayout(
+  tiles: Uint8Array,
+  blocked: Uint8Array,
+  w: number,
+  h: number,
+  layout: InteriorLayout,
+) {
+  const mid = Math.floor(w / 2);
+  if (layout === "house") {
+    vWall(tiles, blocked, w, h, 5, 1, h - 2, [4]);
+  } else if (layout === "ranch") {
+    vWall(tiles, blocked, w, h, 4, 1, h - 2, [h - 4]);
+    vWall(tiles, blocked, w, h, 9, 1, h - 2, [h - 4]);
+  } else if (layout === "shop") {
+    hWall(tiles, blocked, w, h, 5, 1, w - 2, [mid]);
+  } else if (layout === "clinic") {
+    hWall(tiles, blocked, w, h, 5, 1, w - 2, [3, mid, w - 4]);
+    hWall(tiles, blocked, w, h, 9, 1, w - 2, [4, mid, w - 5]);
+    vWall(tiles, blocked, w, h, 7, 1, 5, [5]);
+    vWall(tiles, blocked, w, h, 13, 1, 5, [5]);
+  } else if (layout === "church") {
+    hWall(tiles, blocked, w, h, 5, 1, w - 2, [mid]);
+    vWall(tiles, blocked, w, h, 3, 6, h - 3, []);
+    vWall(tiles, blocked, w, h, w - 4, 6, h - 3, []);
+  } else if (layout === "civic") {
+    vWall(tiles, blocked, w, h, 7, 1, h - 2, [h - 5]);
+    vWall(tiles, blocked, w, h, w - 8, 1, h - 2, [h - 5]);
+    hWall(tiles, blocked, w, h, 7, 8, w - 9, [mid]);
+  } else if (layout === "warehouse") {
+    for (let x = 5; x < w - 4; x += 5) {
+      if (Math.abs(x - mid) <= 1) continue;
+      vWall(tiles, blocked, w, h, x, 2, h - 3, [4, Math.floor(h / 2), h - 5]);
+    }
+  } else if (layout === "hall") {
+    hWall(tiles, blocked, w, h, 8, 1, w - 2, [4, mid, w - 5]);
+    vWall(tiles, blocked, w, h, 7, 1, 8, [8]);
+    vWall(tiles, blocked, w, h, 15, 1, 8, [8]);
+    vWall(tiles, blocked, w, h, 7, 8, h - 2, [h - 4]);
+    vWall(tiles, blocked, w, h, 15, 8, h - 2, [h - 4]);
+  } else if (layout === "school") {
+    hWall(tiles, blocked, w, h, 8, 1, w - 2, [5, mid, w - 5]);
+    for (let x = 6; x < w - 4; x += 8) {
+      if (Math.abs(x - mid) <= 1) continue;
+      vWall(tiles, blocked, w, h, x, 1, 8, [8]);
+    }
+    for (let x = 6; x < w - 4; x += 8) {
+      if (Math.abs(x - mid) <= 1) continue;
+      vWall(tiles, blocked, w, h, x, 8, h - 2, [h - 4]);
+    }
+  } else if (layout === "college") {
+    hWall(tiles, blocked, w, h, 13, 1, w - 2, [6, 15, mid, 28, 36]);
+    hWall(tiles, blocked, w, h, 17, 1, w - 2, [6, 16, mid, 26, 36]);
+    for (const x of [8, 16, 26, 34]) {
+      vWall(tiles, blocked, w, h, x, 1, 13, [12]);
+    }
+    for (const x of [8, 16, 26, 34]) {
+      vWall(tiles, blocked, w, h, x, 17, h - 2, [18]);
+    }
+  }
+}
+
+function layoutSpots(b: Building, w: number, h: number, layout: InteriorLayout): Interact[] {
+  const doorX = Math.floor(w / 2);
+  const doorY = h - 1;
+  const spots: Interact[] = [
+    {
+      id: `${b.id}-door`,
+      kind: "door",
+      x: doorX * TILE + 16,
+      y: doorY * TILE + 8,
+      r: 28,
+      label: "Leave",
+    },
+  ];
+  const add = (kind: Interact["kind"], label: string, tx: number, ty: number) => {
+    const x = Math.max(2, Math.min(w - 3, tx));
+    const y = Math.max(2, Math.min(h - 4, ty));
+    spots.push({
+      id: `${b.id}-${kind}-${spots.length}`,
+      kind,
+      x: x * TILE + 16,
+      y: y * TILE + 16,
+      r: 22,
+      searched: false,
+      label,
+    });
+  };
+
+  if (layout === "house") {
+    add("loot", "Search cabinet", 2, 3);
+    add("chest", "Storage", 3, 5);
+    add("bench", "Crafting bench", 2, 6);
+    if (b.claimable) {
+      add("bed", "Bed", 7, 3);
+      add("claim", b.claimed ? "Home" : "Claim as home", 8, 5);
+    }
+  } else if (layout === "ranch") {
+    add("loot", "Search kitchen", 2, 3);
+    add("loot", "Search closet", 7, 3);
+    add("chest", "Storage", 11, 3);
+    add("bench", "Crafting bench", 2, 7);
+    if (b.claimable) {
+      add("bed", "Bed", 12, 7);
+      add("claim", b.claimed ? "Home" : "Claim as home", 11, 5);
+    }
+  } else if (layout === "shop") {
+    add("loot", "Search counter", 3, 3);
+    add("loot", "Search shelves", 8, 3);
+    add("loot", "Search back room", 4, 7);
+    add("chest", "Storage", w - 4, 7);
+    add("bench", "Crafting bench", w - 4, 3);
+  } else if (layout === "clinic") {
+    add("loot", "Search cabinet", 3, 3);
+    add("loot", "Exam room", 10, 3);
+    add("loot", "Pharmacy shelf", w - 4, 3);
+    add("loot", "Supply closet", 4, 11);
+    add("chest", "Storage", w - 5, 11);
+    add("bench", "Crafting bench", 10, 7);
+    if (b.claimable) {
+      add("bed", "Gurney", 15, 11);
+      add("claim", b.claimed ? "Home" : "Claim as home", 16, 7);
+    }
+  } else if (layout === "church") {
+    add("loot", "Search pews", 7, 10);
+    add("loot", "Vestry cabinet", 4, 3);
+    add("chest", "Storage", 10, 3);
+    add("bench", "Crafting bench", 7, 14);
+  } else if (layout === "civic") {
+    add("loot", "Search desk", 3, 4);
+    add("loot", "Records cabinet", w - 4, 4);
+    add("loot", "Office drawer", 12, 4);
+    add("loot", "Back office", 4, 11);
+    add("chest", "Evidence locker", w - 5, 11);
+    add("bench", "Crafting bench", Math.floor(w / 2), 10);
+  } else if (layout === "warehouse") {
+    add("loot", "Aisle 1", 3, 4);
+    add("loot", "Aisle 2", 9, 4);
+    add("loot", "Aisle 3", 15, 8);
+    add("loot", "Aisle 4", 21, 4);
+    add("loot", "Back stock", 4, h - 5);
+    add("loot", "Tool bay", w - 5, h - 5);
+    add("chest", "Cage", w - 5, 4);
+    add("bench", "Crafting bench", 8, h - 5);
+  } else if (layout === "hall") {
+    add("loot", "Search desk", 3, 4);
+    add("loot", "Dorm closet", 10, 4);
+    add("loot", "Lounge", 17, 4);
+    add("chest", "Storage", 4, 12);
+    add("bench", "Crafting bench", 16, 12);
+  } else if (layout === "school") {
+    add("loot", "Classroom 1", 3, 4);
+    add("loot", "Classroom 2", 12, 4);
+    add("loot", "Classroom 3", w - 5, 4);
+    add("loot", "Locker bank", 6, 12);
+    add("chest", "Supply closet", w - 5, 12);
+    add("bench", "Shop bench", 14, 12);
+  } else if (layout === "college") {
+    add("loot", "Lecture hall desk", 5, 6);
+    add("loot", "Classroom 2", 14, 6);
+    add("loot", "Classroom 3", 22, 6);
+    add("loot", "Lab cabinet", 30, 6);
+    add("loot", "Faculty office", 38, 6);
+    add("loot", "Dorm A", 5, 22);
+    add("loot", "Dorm B", 16, 22);
+    add("loot", "Dorm C", 27, 22);
+    add("loot", "Dorm D", 36, 22);
+    add("loot", "Vending alcove", 20, 15);
+    add("chest", "Lost and found", 8, 15);
+    add("bench", "Shop bench", 33, 15);
+  }
+  return spots;
+}
+
 export function buildInterior(b: Building, rng: () => number): Interior {
-  const w = b.kind === "lowes" ? 28 : b.kind === "college" ? 22 : 18;
-  const h = b.kind === "lowes" ? 20 : 14;
+  const { w, h, layout } = interiorSpec(b);
   const tiles = new Uint8Array(w * h);
   const blocked = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -717,48 +918,20 @@ export function buildInterior(b: Building, rng: () => number): Interior {
   const doorY = h - 1;
   blocked[doorY * w + doorX] = 0;
   blocked[doorY * w + doorX - 1] = 0;
+  if (w > 16) blocked[doorY * w + doorX + 1] = 0;
   tiles[doorY * w + doorX] = T.DIRT;
   tiles[doorY * w + doorX - 1] = T.DIRT;
+  if (w > 16) tiles[doorY * w + doorX + 1] = T.DIRT;
 
-  const furniture: Interact[] = [
-    {
-      id: `${b.id}-door`,
-      kind: "door",
-      x: doorX * TILE + 16,
-      y: doorY * TILE + 8,
-      r: 28,
-      label: "Leave",
-    },
-  ];
-  const spots: { kind: Interact["kind"]; label: string }[] = [
-    { kind: "loot", label: "Search cabinet" },
-    { kind: "loot", label: "Search crate" },
-    { kind: "chest", label: "Storage" },
-    { kind: "bench", label: "Crafting bench" },
-  ];
-  if (b.claimable) {
-    spots.push({ kind: "bed", label: "Bed" });
-    spots.push({ kind: "claim", label: b.claimed ? "Home" : "Claim as home" });
-  }
-  if (b.kind === "lowes" || b.kind === "clinic" || b.kind === "kfc") {
-    spots.push({ kind: "loot", label: "Search shelves" });
-    spots.push({ kind: "loot", label: "Search back room" });
-  }
-  let n = 0;
-  for (const s of spots) {
-    n++;
-    const fx = 2 + Math.floor(rng() * (w - 4));
-    const fy = 2 + Math.floor(rng() * (h - 5));
-    furniture.push({
-      id: `${b.id}-${s.kind}-${n}`,
-      kind: s.kind,
-      x: fx * TILE + 16,
-      y: fy * TILE + 16,
-      r: 22,
-      searched: false,
-      label: s.label,
-    });
-  }
+  placeLayout(tiles, blocked, w, h, layout);
+  const furniture = layoutSpots(b, w, h, layout).filter((f) => {
+    if (f.kind === "door") return true;
+    const tx = Math.floor(f.x / TILE);
+    const ty = Math.floor(f.y / TILE);
+    if (tx < 0 || ty < 0 || tx >= w || ty >= h) return false;
+    return blocked[ty * w + tx] !== 1;
+  });
+  void rng;
   return {
     buildingId: b.id,
     w,
@@ -771,4 +944,4 @@ export function buildInterior(b: Building, rng: () => number): Interior {
   };
 }
 
-export { BLOCKED };
+export { BLOCKED } from "./constants";

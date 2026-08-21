@@ -1,7 +1,35 @@
-import { INFECTION_TIME, PLAYER_RADIUS, PLAYER_SPEED, PLAYER_SPRINT, TILE, ZOMBIE_RADIUS, ZOMBIE_SPEED, ZOMBIE_TOWN_SPEED } from "./constants";
+import {
+  BEAR_RADIUS,
+  BRUTE_RADIUS,
+  BRUTE_SPEED,
+  CUB_RADIUS,
+  INFECTION_TIME,
+  MAP_H,
+  MAP_W,
+  PLAYER_RADIUS,
+  PLAYER_SPEED,
+  PLAYER_SPRINT,
+  TILE,
+  tileSpeed,
+  worldToGeo,
+  ZOMBIE_RADIUS,
+  ZOMBIE_SPEED,
+  ZOMBIE_TOWN_SPEED,
+} from "./constants";
 import type { Actions } from "./input";
 import { ITEMS, addItem, rollLoot, takeItem, type Slot } from "./items";
-import { blockedAt, buildInterior, type Building, type Interior, type World, type Zombie } from "./world";
+import { SAVE_VERSION } from "./save";
+import {
+  blockedAt,
+  buildInterior,
+  solidHit,
+  tileAt,
+  type Building,
+  type Critter,
+  type Interior,
+  type World,
+  type Zombie,
+} from "./world";
 import { mulberry32 } from "./rng";
 
 export type Bullet = {
@@ -12,6 +40,8 @@ export type Bullet = {
   dmg: number;
   life: number;
   alive: boolean;
+  paint: boolean;
+  tint: string;
 };
 
 export type Particle = {
@@ -40,6 +70,8 @@ export type Player = {
   chopping: number;
   searching: number;
   searchTarget: string | null;
+  walk: number;
+  moving: boolean;
 };
 
 export type GameState = {
@@ -90,6 +122,8 @@ export function createState(world: World, rng = mulberry32(40)): GameState {
       chopping: 0,
       searching: 0,
       searchTarget: null,
+      walk: 0,
+      moving: false,
     },
     interior: null,
     returnX: world.startX,
@@ -137,20 +171,29 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
     }
   }
 
-  const mapW = s.interior ? s.interior.w * TILE : 400 * TILE;
-  const mapH = s.interior ? s.interior.h * TILE : 260 * TILE;
+  const mapW = s.interior ? s.interior.w * TILE : MAP_W * TILE;
+  const mapH = s.interior ? s.interior.h * TILE : MAP_H * TILE;
   const blocked = s.interior ? s.interior.blocked : s.world.blocked;
-  const bw = s.interior ? s.interior.w : 400;
+  const tiles = s.interior ? s.interior.tiles : s.world.tiles;
+  const bw = s.interior ? s.interior.w : MAP_W;
 
   if (!s.atBench) {
-    const spd = a.sprint ? PLAYER_SPRINT : PLAYER_SPEED;
+    const ground = tileSpeed(tileAt(tiles, p.x, p.y, bw));
+    const spd = (a.sprint ? PLAYER_SPRINT : PLAYER_SPEED) * ground;
     const mx = a.moveX * spd * dt;
     const my = a.moveY * spd * dt;
+    const ox = p.x;
+    const oy = p.y;
     if (mx || my) {
       if (Math.abs(mx) > Math.abs(my)) p.facing = mx < 0 ? 1 : 2;
       else p.facing = my < 0 ? 3 : 0;
     }
-    tryMove(p, blocked, bw, mx, my, mapW, mapH);
+    tryMove(p, blocked, bw, mx, my, mapW, mapH, s.interior ? undefined : s.world, PLAYER_RADIUS);
+    const dist = Math.hypot(p.x - ox, p.y - oy);
+    p.moving = dist > 0.2;
+    if (p.moving) p.walk += dist * 0.14;
+  } else {
+    p.moving = false;
   }
 
   s.atBench = false;
@@ -200,13 +243,8 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
   if (a.justAttack && p.attackT <= 0) doAttack(s);
 
   stepBullets(s, dt);
+  stepWildlife(s, dt);
   if (!s.interior) stepZombies(s, dt);
-  else {
-    // a few interior biters in town buildings
-    if (s.world.buildings.find((b) => b.id === s.interior?.buildingId)?.zone === "town") {
-      /* interiors stay clear for readability; zombies wait outside */
-    }
-  }
 
   if (p.hp <= 0) {
     s.dead = true;
@@ -222,22 +260,33 @@ function tryMove(
   my: number,
   mapW: number,
   mapH: number,
+  world: World | undefined,
+  radius: number,
 ) {
   const nx = Math.max(12, Math.min(mapW - 12, p.x + mx));
   const ny = Math.max(12, Math.min(mapH - 12, p.y + my));
-  const stuck = circleBlocked(blocked, bw, p.x, p.y, PLAYER_RADIUS);
-  if (stuck || !circleBlocked(blocked, bw, nx, p.y, PLAYER_RADIUS)) p.x = nx;
-  if (stuck || !circleBlocked(blocked, bw, p.x, ny, PLAYER_RADIUS)) p.y = ny;
+  const stuck = circleBlocked(blocked, bw, p.x, p.y, radius, world);
+  if (stuck || !circleBlocked(blocked, bw, nx, p.y, radius, world)) p.x = nx;
+  if (stuck || !circleBlocked(blocked, bw, p.x, ny, radius, world)) p.y = ny;
 }
 
-function circleBlocked(blocked: Uint8Array, bw: number, x: number, y: number, r: number): boolean {
-  const pts = [
+function circleBlocked(
+  blocked: Uint8Array,
+  bw: number,
+  x: number,
+  y: number,
+  r: number,
+  world?: World,
+): boolean {
+  const pts: [number, number][] = [
     [x - r, y],
     [x + r, y],
     [x, y - r],
     [x, y + r * 0.4],
   ];
-  return pts.some(([px, py]) => blockedAt(blocked, px!, py!, bw));
+  if (pts.some(([px, py]) => blockedAt(blocked, px, py, bw))) return true;
+  if (world && solidHit(world, x, y, r)) return true;
+  return false;
 }
 
 function nearestBuilding(s: GameState, r: number): Building | null {
@@ -339,15 +388,42 @@ function doAttack(s: GameState) {
   const dir = FACE_VEC[p.facing] ?? FACE_VEC[0]!;
 
   if (wep.kind === "ranged") {
-    const ammo = wep.ammo ?? "bullets";
+    if (wep.nonlethal && wep.contact && !s.interior) {
+      let jammed = false;
+      const reach = PLAYER_RADIUS + ZOMBIE_RADIUS + 4;
+      for (const z of s.world.zombies) {
+        if (!z.alive) continue;
+        if (Math.hypot(z.x - p.x, z.y - p.y) <= reach) {
+          hurtZombie(s, z, wep.contact);
+          jammed = true;
+        }
+      }
+      for (const c of s.world.critters) {
+        if (!c.alive) continue;
+        if (Math.hypot(c.x - p.x, c.y - p.y) <= reach + 4) {
+          hurtCritter(s, c, wep.contact);
+          jammed = true;
+        }
+      }
+      if (jammed) {
+        s.shake = 0.14;
+        s.hitstop = 0.03;
+        toast(s, "Jammed the marker into them.");
+        return;
+      }
+    }
+    const ammo = wep.ammo ?? "ammo9";
     if (!takeItem(p.inv, ammo, 1)) {
       toast(s, "No ammo.");
       p.attackT = 0.2;
       return;
     }
     const n = wep.spread ?? 1;
+    const spd = wep.speed ?? 320;
+    const spreadStep = wep.spreadRad ?? 0.12;
+    const tint = wep.nonlethal ? "#e85ad0" : wep.silent ? "#c4a574" : n > 1 ? "#d9c27a" : "#e6e1d0";
     for (let i = 0; i < n; i++) {
-      const spread = n > 1 ? (i - (n - 1) / 2) * 0.12 : 0;
+      const spread = n > 1 ? (i - (n - 1) / 2) * spreadStep : 0;
       const ca = Math.cos(spread);
       const sa = Math.sin(spread);
       const vx = dir.x * ca - dir.y * sa;
@@ -355,31 +431,48 @@ function doAttack(s: GameState) {
       s.bullets.push({
         x: p.x + vx * 14,
         y: p.y + vy * 14,
-        vx: vx * 320,
-        vy: vy * 320,
-        dmg: wep.dmg ?? 20,
-        life: (wep.range ?? 200) / 320,
+        vx: vx * spd,
+        vy: vy * spd,
+        dmg: wep.nonlethal ? 0 : (wep.dmg ?? 20),
+        life: (wep.range ?? 200) / spd,
         alive: true,
+        paint: !!wep.nonlethal,
+        tint,
       });
     }
-    s.shake = 0.12;
+    s.shake = wep.silent ? 0.04 : wep.nonlethal ? 0.06 : 0.12;
     return;
   }
 
   const range = wep.range ?? 28;
   let hit = false;
-  for (const z of s.world.zombies) {
-    if (!z.alive) continue;
-    if (s.interior) continue;
-    const dx = z.x - p.x;
-    const dy = z.y - p.y;
-    const d = Math.hypot(dx, dy);
-    if (d > range + ZOMBIE_RADIUS) continue;
-    const ndx = d ? dx / d : 0;
-    const ndy = d ? dy / d : 0;
-    if (ndx * dir.x + ndy * dir.y < 0.25 && d > 16) continue;
-    hurtZombie(s, z, wep.dmg ?? 8);
-    hit = true;
+  if (!s.interior) {
+    for (const z of s.world.zombies) {
+      if (!z.alive) continue;
+      const zR = z.brute ? BRUTE_RADIUS : ZOMBIE_RADIUS;
+      const dx = z.x - p.x;
+      const dy = z.y - p.y;
+      const d = Math.hypot(dx, dy);
+      if (d > range + zR) continue;
+      const ndx = d ? dx / d : 0;
+      const ndy = d ? dy / d : 0;
+      if (ndx * dir.x + ndy * dir.y < 0.25 && d > 16) continue;
+      hurtZombie(s, z, wep.dmg ?? 8);
+      hit = true;
+    }
+    for (const c of s.world.critters) {
+      if (!c.alive) continue;
+      const r = critterRadius(c);
+      const dx = c.x - p.x;
+      const dy = c.y - p.y;
+      const d = Math.hypot(dx, dy);
+      if (d > range + r) continue;
+      const ndx = d ? dx / d : 0;
+      const ndy = d ? dy / d : 0;
+      if (ndx * dir.x + ndy * dir.y < 0.25 && d > 16) continue;
+      hurtCritter(s, c, wep.dmg ?? 8);
+      hit = true;
+    }
   }
   if (hit) {
     s.shake = 0.16;
@@ -388,13 +481,14 @@ function doAttack(s: GameState) {
 }
 
 function hurtZombie(s: GameState, z: Zombie, dmg: number) {
+  if (dmg <= 0) return;
   z.hp -= dmg;
   z.hitT = 0.12;
   const dx = z.x - s.player.x;
   const dy = z.y - s.player.y;
   const d = Math.hypot(dx, dy) || 1;
-  z.x += (dx / d) * 10;
-  z.y += (dy / d) * 10;
+  z.x += (dx / d) * (z.brute ? 6 : 10);
+  z.y += (dy / d) * (z.brute ? 6 : 10);
   burst(s, z.x, z.y, "#6a2a24", 6);
   if (z.hp <= 0) {
     z.alive = false;
@@ -403,9 +497,43 @@ function hurtZombie(s: GameState, z: Zombie, dmg: number) {
   }
 }
 
+function paintZombie(s: GameState, z: Zombie) {
+  z.paintT = 3.2;
+  z.hitT = 0.08;
+  burst(s, z.x, z.y, "#e85ad0", 8);
+}
+
+function critterRadius(c: Critter): number {
+  if (c.kind === "bear") return BEAR_RADIUS;
+  if (c.kind === "cub") return CUB_RADIUS;
+  if (c.kind === "buck") return 14;
+  if (c.kind === "doe") return 13;
+  if (c.kind === "fawn") return 9;
+  if (c.kind === "turkey") return 8;
+  return 5;
+}
+
+function hurtCritter(s: GameState, c: Critter, dmg: number) {
+  if (dmg <= 0) return;
+  c.hp -= dmg;
+  const dx = c.x - s.player.x;
+  const dy = c.y - s.player.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const knock = c.kind === "bear" || c.kind === "cub" ? 4 : 12;
+  c.x += (dx / d) * knock;
+  c.y += (dy / d) * knock;
+  burst(s, c.x, c.y, "#7a3a2a", 5);
+  if (c.hp <= 0) {
+    c.alive = false;
+    if (c.kind === "doe" || c.kind === "buck") addItem(s.player.inv, "meat", 1 + Math.floor(s.rng() * 2));
+    else if (c.kind === "turkey") addItem(s.player.inv, "meat", 1);
+    else if (c.kind === "bear" || c.kind === "cub") addItem(s.player.inv, "meat", 2 + Math.floor(s.rng() * 2));
+  }
+}
+
 function stepBullets(s: GameState, dt: number) {
   const blocked = s.interior ? s.interior.blocked : s.world.blocked;
-  const bw = s.interior ? s.interior.w : 400;
+  const bw = s.interior ? s.interior.w : MAP_W;
   for (const b of s.bullets) {
     if (!b.alive) continue;
     b.life -= dt;
@@ -418,8 +546,20 @@ function stepBullets(s: GameState, dt: number) {
     if (s.interior) continue;
     for (const z of s.world.zombies) {
       if (!z.alive) continue;
-      if (Math.hypot(z.x - b.x, z.y - b.y) < ZOMBIE_RADIUS + 4) {
-        hurtZombie(s, z, b.dmg);
+      const zR = z.brute ? BRUTE_RADIUS : ZOMBIE_RADIUS;
+      if (Math.hypot(z.x - b.x, z.y - b.y) < zR + 4) {
+        if (b.paint) paintZombie(s, z);
+        else hurtZombie(s, z, b.dmg);
+        b.alive = false;
+        break;
+      }
+    }
+    if (!b.alive) continue;
+    for (const c of s.world.critters) {
+      if (!c.alive) continue;
+      if (Math.hypot(c.x - b.x, c.y - b.y) < critterRadius(c) + 4) {
+        if (!b.paint) hurtCritter(s, c, b.dmg);
+        else burst(s, c.x, c.y, "#e85ad0", 4);
         b.alive = false;
         break;
       }
@@ -427,14 +567,23 @@ function stepBullets(s: GameState, dt: number) {
   }
 }
 
+function zombieRadius(z: Zombie) {
+  return z.brute ? BRUTE_RADIUS : ZOMBIE_RADIUS;
+}
+
 function stepZombies(s: GameState, dt: number) {
   const p = s.player;
   const blocked = s.world.blocked;
+  const tiles = s.world.tiles;
+  const world = s.world;
+  const mapW = MAP_W * TILE;
+  const mapH = MAP_H * TILE;
   let nearby = 0;
   for (const z of s.world.zombies) {
     if (!z.alive) continue;
     z.hitT = Math.max(0, z.hitT - dt);
     z.attackCd = Math.max(0, z.attackCd - dt);
+    if (z.paintT > 0) z.paintT = Math.max(0, z.paintT - dt);
     const dx = p.x - z.x;
     const dy = p.y - z.y;
     const d = Math.hypot(dx, dy);
@@ -442,13 +591,28 @@ function stepZombies(s: GameState, dt: number) {
     nearby++;
     if (nearby > 90) continue;
 
-    const town = z.x > 270 * TILE;
-    const detect = town ? 220 : 130;
+    const town = inTown(z.x, z.y);
+    const detect = z.paintT > 0 ? 40 : town ? 220 : 130;
+    const zR = zombieRadius(z);
+    const biteR = PLAYER_RADIUS + zR + 5;
+    const ground = tileSpeed(tileAt(tiles, z.x, z.y));
+    const painted = z.paintT > 0;
+    const base =
+      (z.brute ? BRUTE_SPEED : town ? ZOMBIE_TOWN_SPEED : ZOMBIE_SPEED) * ground * (painted ? 0.45 : 1);
     let vx = 0;
     let vy = 0;
-    if (d < detect) {
-      vx = (dx / (d || 1)) * (town ? ZOMBIE_TOWN_SPEED : ZOMBIE_SPEED);
-      vy = (dy / (d || 1)) * (town ? ZOMBIE_TOWN_SPEED : ZOMBIE_SPEED);
+    const seeking = d < detect && !painted;
+
+    if (d < biteR) {
+      vx = 0;
+      vy = 0;
+      if (z.attackCd <= 0) {
+        bite(s, z);
+        z.attackCd = z.brute ? 2.0 : 1.7;
+      }
+    } else if (seeking) {
+      vx = (dx / (d || 1)) * base;
+      vy = (dy / (d || 1)) * base;
     } else {
       z.wanderT -= dt;
       if (z.wanderT <= 0) {
@@ -459,34 +623,43 @@ function stepZombies(s: GameState, dt: number) {
       const wx = z.wx - z.x;
       const wy = z.wy - z.y;
       const wd = Math.hypot(wx, wy) || 1;
-      vx = (wx / wd) * ZOMBIE_SPEED * 0.35;
-      vy = (wy / wd) * ZOMBIE_SPEED * 0.35;
+      vx = (wx / wd) * base * 0.35;
+      vy = (wy / wd) * base * 0.35;
     }
 
-    // light separation
-    for (const o of s.world.zombies) {
-      if (o === z || !o.alive) continue;
-      const ox = z.x - o.x;
-      const oy = z.y - o.y;
-      const od = Math.hypot(ox, oy);
-      if (od > 0 && od < 22) {
-        vx += (ox / od) * 18;
-        vy += (oy / od) * 18;
+    if (d > biteR) {
+      for (const o of s.world.zombies) {
+        if (o === z || !o.alive) continue;
+        const ox = z.x - o.x;
+        const oy = z.y - o.y;
+        const od = Math.hypot(ox, oy);
+        const sep = z.brute || o.brute ? 22 : 16;
+        if (od > 0 && od < sep) {
+          vx += (ox / od) * 8;
+          vy += (oy / od) * 8;
+        }
       }
     }
 
-    const nx = z.x + vx * dt;
-    const ny = z.y + vy * dt;
-    if (!blockedAt(blocked, nx, z.y)) z.x = nx;
-    if (!blockedAt(blocked, z.x, ny)) z.y = ny;
-    if (Math.abs(vx) > Math.abs(vy)) z.facing = vx < 0 ? 1 : 2;
-    else if (vy) z.facing = vy < 0 ? 3 : 0;
-
-    if (d < PLAYER_RADIUS + ZOMBIE_RADIUS + 4 && z.attackCd <= 0) {
-      bite(s, z);
-      z.attackCd = 1.05;
+    const ox = z.x;
+    const oy = z.y;
+    tryMove(z, blocked, MAP_W, vx * dt, vy * dt, mapW, mapH, world, zR);
+    const mx = z.x - ox;
+    const my = z.y - oy;
+    const moved = Math.hypot(mx, my);
+    if (moved > 0.25) {
+      z.walk += moved * 0.11;
+      if (Math.abs(mx) > Math.abs(my)) z.facing = mx < 0 ? 1 : 2;
+      else z.facing = my < 0 ? 3 : 0;
     }
+    z.vx = mx / dt;
+    z.vy = my / dt;
   }
+}
+
+function inTown(x: number, y: number): boolean {
+  const t = worldToGeo(x, y);
+  return t.lng > -79.92 || (t.lng > -79.95 && t.lat > 36.985);
 }
 
 function bite(s: GameState, z: Zombie) {
@@ -495,17 +668,178 @@ function bite(s: GameState, z: Zombie) {
   const armor = p.armor ? ITEMS[p.armor] : null;
   const def = armor?.def ?? 0;
   const inf = armor?.infect ?? 0;
-  const dmg = (8 + s.rng() * 5) * (1 - def);
+  const raw = z.brute ? 50 : 14.3;
+  const dmg = raw * (1 - def);
   p.hp -= dmg;
-  p.invuln = 0.45;
-  s.shake = 0.22;
-  burst(s, p.x, p.y, "#a33b34", 8);
-  const chance = 0.3 * (1 - inf);
+  p.invuln = z.brute ? 0.55 : 0.45;
+  s.shake = z.brute ? 0.34 : 0.22;
+  burst(s, p.x, p.y, "#a33b34", z.brute ? 12 : 8);
+  const chance = (z.brute ? 0.55 : 0.3) * (1 - inf);
   if (s.rng() < chance && p.infection <= 0) {
     p.infection = INFECTION_TIME;
     toast(s, "Bitten. Find antibiotics.");
   }
-  void z;
+}
+
+function stepWildlife(s: GameState, dt: number) {
+  const p = s.player;
+  const blocked = s.world.blocked;
+  const tiles = s.world.tiles;
+  const world = s.world;
+  const mapW = MAP_W * TILE;
+  const mapH = MAP_H * TILE;
+  const inside = !!s.interior;
+  let bearWarned = false;
+
+  for (const c of s.world.critters) {
+    if (!c.alive) continue;
+    c.dashT = Math.max(0, c.dashT - dt);
+    const r = critterRadius(c);
+    const dx = p.x - c.x;
+    const dy = p.y - c.y;
+    const pd = Math.hypot(dx, dy);
+
+    if (!inside && (c.kind === "bear" || c.kind === "cub")) {
+      if (pd < 420 && !bearWarned && c.kind === "bear") {
+        bearWarned = true;
+        if (pd < 260 && s.toastT <= 0) toast(s, "A bear. Don't.");
+      }
+      if (pd < r + PLAYER_RADIUS) {
+        p.hp = 0;
+        toast(s, "The bear.");
+        burst(s, p.x, p.y, "#4a2018", 16);
+      }
+      for (const z of s.world.zombies) {
+        if (!z.alive) continue;
+        if (Math.hypot(z.x - c.x, z.y - c.y) < r + zombieRadius(z)) {
+          z.alive = false;
+          burst(s, z.x, z.y, "#4a2018", 8);
+        }
+      }
+      for (const o of s.world.critters) {
+        if (o === c || !o.alive) continue;
+        if (o.kind === "bear" || o.kind === "cub") continue;
+        if (o.kind === "doe" || o.kind === "buck" || o.kind === "fawn") {
+          if (Math.hypot(o.x - c.x, o.y - c.y) < r + critterRadius(o)) {
+            o.alive = false;
+            burst(s, o.x, o.y, "#4a2018", 6);
+          }
+        }
+      }
+    }
+
+    let vx = 0;
+    let vy = 0;
+    const ground = tileSpeed(tileAt(tiles, c.x, c.y));
+    const mom = c.follow ? s.world.critters.find((o) => o.id === c.follow && o.alive) : null;
+
+    if (c.kind === "bear" || c.kind === "cub") {
+      const speed = (c.kind === "bear" ? 22 : 26) * ground;
+      if (mom) {
+        const mx = mom.x - c.x;
+        const my = mom.y - c.y;
+        const md = Math.hypot(mx, my) || 1;
+        if (md > 36) {
+          vx = (mx / md) * speed;
+          vy = (my / md) * speed;
+        }
+      } else {
+        c.dashT -= dt;
+        if (c.dashT <= 0) {
+          c.dashT = 3 + s.rng() * 4;
+          c.pack = Math.floor(s.rng() * 8);
+        }
+        const ang = (c.pack / 8) * Math.PI * 2;
+        vx = Math.cos(ang) * speed * 0.55;
+        vy = Math.sin(ang) * speed * 0.55;
+      }
+    } else if (c.kind === "squirrel") {
+      const speed = (pd < 90 || c.dashT > 0 ? 170 : 48) * ground;
+      if (pd < 90 && c.dashT <= 0) c.dashT = 0.55;
+      const ang = pd > 1 ? Math.atan2(-dy, -dx) + (s.rng() - 0.5) * 0.6 : s.rng() * Math.PI * 2;
+      vx = Math.cos(ang) * speed;
+      vy = Math.sin(ang) * speed;
+    } else {
+      const threat = nearestThreat(s, c.x, c.y, c.kind === "turkey" ? 140 : 180);
+      const flee = threat && (!inside || threat.kind !== "player");
+      const speed =
+        (c.kind === "turkey" ? (flee ? 70 : 28) : flee ? 88 : 34) * ground;
+      if (mom) {
+        const mx = mom.x - c.x;
+        const my = mom.y - c.y;
+        const md = Math.hypot(mx, my) || 1;
+        const space = c.kind === "fawn" ? 22 : 30;
+        if (md > space) {
+          vx = (mx / md) * speed;
+          vy = (my / md) * speed;
+        } else if (flee && threat) {
+          const fx = c.x - threat.x;
+          const fy = c.y - threat.y;
+          const fd = Math.hypot(fx, fy) || 1;
+          vx = (fx / fd) * speed;
+          vy = (fy / fd) * speed;
+        }
+      } else if (flee && threat) {
+        const fx = c.x - threat.x;
+        const fy = c.y - threat.y;
+        const fd = Math.hypot(fx, fy) || 1;
+        vx = (fx / fd) * speed;
+        vy = (fy / fd) * speed;
+      } else {
+        if (c.dashT <= 0) {
+          c.dashT = 2 + s.rng() * 5;
+          c.pack = Math.floor(s.rng() * 8);
+        }
+        const ang = (c.pack / 8) * Math.PI * 2;
+        vx = Math.cos(ang) * speed * 0.4;
+        vy = Math.sin(ang) * speed * 0.4;
+      }
+    }
+
+    const ox = c.x;
+    const oy = c.y;
+    tryMove(c, blocked, MAP_W, vx * dt, vy * dt, mapW, mapH, world, Math.max(5, r * 0.45));
+    const mx = c.x - ox;
+    const my = c.y - oy;
+    const moved = Math.hypot(mx, my);
+    if (moved > 0.2) {
+      c.walk += moved * (c.kind === "squirrel" ? 0.22 : 0.12);
+      if (Math.abs(mx) > Math.abs(my)) c.facing = mx < 0 ? 1 : 2;
+      else c.facing = my < 0 ? 3 : 0;
+    }
+    c.vx = mx / dt;
+    c.vy = my / dt;
+  }
+}
+
+function nearestThreat(s: GameState, x: number, y: number, r: number): { x: number; y: number; kind: string } | null {
+  let best: { x: number; y: number; kind: string } | null = null;
+  let d = r;
+  if (!s.interior) {
+    const pd = Math.hypot(s.player.x - x, s.player.y - y);
+    if (pd < d) {
+      d = pd;
+      best = { x: s.player.x, y: s.player.y, kind: "player" };
+    }
+  }
+  for (const z of s.world.zombies) {
+    if (!z.alive) continue;
+    const zd = Math.hypot(z.x - x, z.y - y);
+    if (zd < d) {
+      d = zd;
+      best = { x: z.x, y: z.y, kind: "zombie" };
+    }
+  }
+  for (const c of s.world.critters) {
+    if (!c.alive) continue;
+    if (c.kind !== "bear" && c.kind !== "cub") continue;
+    const bd = Math.hypot(c.x - x, c.y - y);
+    if (bd < d + 40) {
+      d = bd;
+      best = { x: c.x, y: c.y, kind: "bear" };
+    }
+  }
+  return best;
 }
 
 export function useItem(s: GameState, slotIndex: number) {
@@ -568,7 +902,7 @@ export function stepParticles(s: GameState, dt: number) {
 
 export function snapshotSave(s: GameState) {
   return {
-    version: 1 as const,
+    version: SAVE_VERSION,
     x: s.interior ? s.returnX : s.player.x,
     y: s.interior ? s.returnY : s.player.y,
     hp: s.player.hp,
@@ -581,31 +915,40 @@ export function snapshotSave(s: GameState) {
     searched: [...s.searched],
     chopped: s.world.trees.filter((t) => t.chopped).map((t) => t.id),
     deadZ: s.world.zombies.filter((z) => !z.alive).map((z) => z.id),
+    deadC: s.world.critters.filter((c) => !c.alive).map((c) => c.id),
     interior: s.interior?.buildingId ?? null,
   };
 }
 
-export function applySave(s: GameState, data: {
-  x: number;
-  y: number;
-  hp: number;
-  infection: number;
-  weapon: string;
-  armor: string;
-  inv: Slot[];
-  claimed: string[];
-  chests: Record<string, Slot[]>;
-  searched: string[];
-  chopped: number[];
-  deadZ: number[];
-}) {
+export function applySave(
+  s: GameState,
+  data: {
+    x: number;
+    y: number;
+    hp: number;
+    infection: number;
+    weapon: string;
+    armor: string;
+    inv: Slot[];
+    claimed: string[];
+    chests: Record<string, Slot[]>;
+    searched: string[];
+    chopped: number[];
+    deadZ: number[];
+    deadC?: number[];
+  },
+) {
   s.player.x = data.x;
   s.player.y = data.y;
   s.player.hp = data.hp;
   s.player.infection = data.infection;
-  s.player.weapon = data.weapon;
+  s.player.weapon =
+    data.weapon === "pistol" ? "pistol9" : data.weapon === "shotgun" ? "pump12" : data.weapon;
   s.player.armor = data.armor;
-  s.player.inv = data.inv ?? [];
+  s.player.inv = (data.inv ?? []).map((s) => ({
+    ...s,
+    id: ({ bullets: "ammo9", shells: "ammo12", pistol: "pistol9", shotgun: "pump12" } as Record<string, string>)[s.id] ?? s.id,
+  }));
   s.claimed = new Set(data.claimed);
   s.chests = data.chests ?? {};
   s.searched = new Set(data.searched);
@@ -613,5 +956,7 @@ export function applySave(s: GameState, data: {
   for (const t of s.world.trees) if (chopped.has(t.id)) t.chopped = true;
   const dead = new Set(data.deadZ);
   for (const z of s.world.zombies) if (dead.has(z.id)) z.alive = false;
+  const deadC = new Set(data.deadC ?? []);
+  for (const c of s.world.critters) if (deadC.has(c.id)) c.alive = false;
   for (const b of s.world.buildings) b.claimed = s.claimed.has(b.id);
 }

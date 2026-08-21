@@ -72,8 +72,8 @@ export function LandingPage() {
           <div>
             <h2 className="font-display text-2xl">Franklin County</h2>
             <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted">
-              A compressed stretch of real pavement: Maggodee Creek west, US-220 through Rocky Mount,
-              the walk from 180 Ferrum Mountain Road to Main Street.
+              Roads follow OpenStreetMap: Ferrum Mountain Road north from VA-40, Franklin Street
+              east to the courthouse, Old Franklin Turnpike to Lowe's and Walmart.
             </p>
           </div>
           <Link to="/guide" className="hidden text-sm text-muted hover:text-fg sm:inline">

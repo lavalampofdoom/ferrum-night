@@ -1,6 +1,6 @@
 import type { Slot } from "./items";
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 3;
 const KEY = "ferrum-night-save";
 const BACK = "ferrum-night-save-bak";
 
@@ -18,6 +18,7 @@ export type SaveData = {
   searched: string[];
   chopped: number[];
   deadZ: number[];
+  deadC?: number[];
   interior: string | null;
 };
 
@@ -27,7 +28,11 @@ export function loadSave(): SaveData | null {
     if (!raw) return null;
     const s = JSON.parse(raw) as SaveData;
     if (!s || typeof s !== "object") return null;
-    if (s.version !== SAVE_VERSION) return migrate(s);
+    if (s.version !== SAVE_VERSION) {
+      // v1 was a fake street grid; OSM map invalidates positions.
+      if (!s.version || s.version < 2) return null;
+      return migrate(s);
+    }
     return s;
   } catch {
     return null;
@@ -42,6 +47,7 @@ function migrate(s: SaveData): SaveData {
   s.searched ??= [];
   s.chopped ??= [];
   s.deadZ ??= [];
+  s.deadC ??= [];
   return s;
 }
 

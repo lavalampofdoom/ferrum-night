@@ -1,8 +1,9 @@
 import type { Assets } from "./assets";
-import { MAP_H, MAP_W, T, TILE, VIEW_TILES_X } from "./constants";
+import { MAP_H, MAP_W, T, TILE, VIEW_TILES_X, geoToWorld } from "./constants";
 import { ITEMS } from "./items";
 import type { GameState } from "./sim";
-import type { Building } from "./world";
+import type { Building, Critter } from "./world";
+import { ROADS } from "./geo-data";
 
 const TILE_IMG: Record<number, string> = {
   [T.GRASS]: "grass",
@@ -91,10 +92,32 @@ export function drawFrame(
     }
     for (const z of s.world.zombies) {
       if (!z.alive) continue;
-      if (!inView(z.x, z.y, cam, vw, vh, 40)) continue;
+      if (!inView(z.x, z.y, cam, vw, vh, 50)) continue;
       sprites.push({
         y: z.y,
-        draw: () => drawActor(ctx, assets.zombie, z.x, z.y, z.facing, s.time * 4, true, z.hitT > 0),
+        draw: () => {
+          const moving = Math.hypot(z.vx, z.vy) > 8;
+          const frame = moving ? z.walk : 0;
+          const sheet = z.brute ? assets.brute : assets.zombie;
+          const size = z.brute ? 42 : 28;
+          drawActor(ctx, sheet, z.x, z.y, z.facing, frame, z.hitT > 0, false, size);
+          if (z.paintT > 0) {
+            ctx.globalAlpha = 0.45;
+            ctx.fillStyle = "#e85ad0";
+            ctx.beginPath();
+            ctx.arc(z.x, z.y - 8, z.brute ? 12 : 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+          }
+        },
+      });
+    }
+    for (const c of s.world.critters) {
+      if (!c.alive) continue;
+      if (!inView(c.x, c.y, cam, vw, vh, 60)) continue;
+      sprites.push({
+        y: c.y,
+        draw: () => drawCritter(ctx, assets, c),
       });
     }
   } else {
@@ -112,8 +135,22 @@ export function drawFrame(
       const attacking = s.player.attackT > (ITEMS[s.player.weapon]?.rate ?? 0.4) * 0.45;
       const sheet = attacking ? assets.attack : assets.player;
       const face = attacking ? 0 : s.player.facing;
-      const frame = attacking ? Math.min(3, Math.floor((1 - s.player.attackT / (ITEMS[s.player.weapon]?.rate ?? 0.4)) * 4)) : Math.floor(s.time * 8);
-      drawActor(ctx, sheet, s.player.x, s.player.y, face, frame, !attacking, s.player.invuln > 0 && Math.floor(s.time * 20) % 2 === 0, attacking);
+      const frame = attacking
+        ? Math.min(3, Math.floor((1 - s.player.attackT / (ITEMS[s.player.weapon]?.rate ?? 0.4)) * 4))
+        : s.player.moving
+          ? s.player.walk
+          : 0;
+      drawActor(
+        ctx,
+        sheet,
+        s.player.x,
+        s.player.y,
+        face,
+        frame,
+        s.player.invuln > 0 && Math.floor(s.time * 20) % 2 === 0,
+        attacking,
+        28,
+      );
     },
   });
 
@@ -122,8 +159,14 @@ export function drawFrame(
 
   for (const b of s.bullets) {
     if (!b.alive) continue;
-    ctx.fillStyle = "#e6e1d0";
-    ctx.fillRect(b.x - 2, b.y - 2, 4, 4);
+    ctx.fillStyle = b.tint || "#e6e1d0";
+    if (b.paint) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillRect(b.x - 2, b.y - 2, 4, 4);
+    }
   }
   for (const p of s.particles) {
     ctx.globalAlpha = Math.max(0, p.life / p.max);
@@ -134,7 +177,6 @@ export function drawFrame(
 
   ctx.restore();
 
-  // dusk wash
   ctx.fillStyle = "rgba(12, 10, 8, 0.22)";
   ctx.fillRect(0, 0, vw, vh);
   const g = ctx.createRadialGradient(vw / 2, vh / 2, vw * 0.2, vw / 2, vh / 2, vw * 0.75);
@@ -165,9 +207,24 @@ function drawTiles(
       const key = TILE_IMG[t] ?? "grass";
       const img = assets.tiles[key];
       if (img) ctx.drawImage(img, x * TILE, y * TILE, TILE + 0.5, TILE + 0.5);
+      if (!s.interior && (t === T.ASPHALT || t === T.LINE)) {
+        ctx.fillStyle = "rgba(14, 12, 10, 0.42)";
+        ctx.fillRect(x * TILE, y * TILE, TILE + 0.5, TILE + 0.5);
+      }
       if (t === T.LINE) {
-        ctx.fillStyle = "rgba(196, 176, 80, 0.35)";
-        ctx.fillRect(x * TILE + 14, y * TILE + 10, 4, 12);
+        ctx.fillStyle = "#ead56a";
+        ctx.fillRect(x * TILE + 12, y * TILE + 6, 7, 18);
+      }
+      if (!s.interior && t === T.DIRT) {
+        const n =
+          (x > 0 && isRoad(tiles[(y * tw + (x - 1))!] ?? -1)) ||
+          (x + 1 < tw && isRoad(tiles[y * tw + (x + 1)] ?? -1)) ||
+          (y > 0 && isRoad(tiles[(y - 1) * tw + x] ?? -1)) ||
+          (y + 1 < th && isRoad(tiles[(y + 1) * tw + x] ?? -1));
+        if (n) {
+          ctx.fillStyle = "rgba(28, 22, 12, 0.38)";
+          ctx.fillRect(x * TILE, y * TILE, TILE + 0.5, TILE + 0.5);
+        }
       }
       if (t === T.TALL) {
         ctx.fillStyle = "rgba(40, 55, 28, 0.18)";
@@ -178,11 +235,15 @@ function drawTiles(
         ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
       }
       if (t === T.PARKING) {
-        ctx.fillStyle = "rgba(0,0,0,0.18)";
+        ctx.fillStyle = "rgba(0,0,0,0.22)";
         ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
       }
     }
   }
+}
+
+function isRoad(t: number) {
+  return t === T.ASPHALT || t === T.LINE;
 }
 
 function drawBuilding(ctx: CanvasRenderingContext2D, assets: Assets, b: Building) {
@@ -202,43 +263,95 @@ function drawActor(
   y: number,
   facing: number,
   frame: number,
-  walkSheet: boolean,
   flash: boolean,
   attackSheet = false,
+  size = 28,
 ) {
   const cols = attackSheet ? 2 : 4;
   const rows = attackSheet ? 2 : 4;
   const cw = sheet.width / cols;
   const ch = sheet.height / rows;
-  const f = ((frame % 4) + 4) % 4;
+  const f = ((Math.floor(frame) % 4) + 4) % 4;
   const col = attackSheet ? f % 2 : f;
   const row = attackSheet ? Math.floor(f / 2) : facing;
-  const dw = 28;
-  const dh = 28;
   ctx.save();
   if (flash) ctx.filter = "brightness(2.4)";
-  ctx.drawImage(sheet, col * cw, row * ch, cw, ch, x - dw / 2, y - dh + 4, dw, dh);
+  ctx.drawImage(sheet, col * cw, row * ch, cw, ch, x - size / 2, y - size + 4, size, size);
   ctx.restore();
-  void walkSheet;
+}
+
+function drawCritter(ctx: CanvasRenderingContext2D, assets: Assets, c: Critter) {
+  const sheet =
+    c.kind === "doe"
+      ? assets.doe
+      : c.kind === "buck"
+        ? assets.buck
+        : c.kind === "fawn"
+          ? assets.fawn
+          : c.kind === "bear"
+            ? assets.bear
+            : c.kind === "cub"
+              ? assets.cub
+              : c.kind === "turkey"
+                ? assets.turkey
+                : assets.squirrel;
+  const size =
+    c.kind === "bear"
+      ? 52
+      : c.kind === "cub"
+        ? 32
+        : c.kind === "buck"
+          ? 36
+          : c.kind === "doe"
+            ? 34
+            : c.kind === "fawn"
+              ? 24
+              : c.kind === "turkey"
+                ? 22
+                : 14;
+  const moving = Math.hypot(c.vx, c.vy) > 6;
+  drawActor(ctx, sheet, c.x, c.y, c.facing, moving ? c.walk : 0, false, false, size);
 }
 
 function drawFurn(ctx: CanvasRenderingContext2D, f: { kind: string; x: number; y: number; searched?: boolean }) {
-  const colors: Record<string, string> = {
-    loot: "#6b5344",
-    bed: "#3d4a5c",
-    chest: "#8a6a3b",
-    bench: "#5a4634",
-    door: "#2a2d24",
-    claim: "#6a8a4e",
-  };
-  ctx.fillStyle = colors[f.kind] ?? "#444";
-  if (f.kind === "bed") ctx.fillRect(f.x - 14, f.y - 10, 28, 18);
-  else if (f.kind === "bench") ctx.fillRect(f.x - 12, f.y - 8, 24, 14);
-  else if (f.kind === "door") ctx.fillRect(f.x - 16, f.y - 4, 32, 10);
-  else ctx.fillRect(f.x - 8, f.y - 8, 16, 16);
+  if (f.kind === "bed") {
+    ctx.fillStyle = "#3d4a5c";
+    ctx.fillRect(f.x - 16, f.y - 12, 32, 22);
+    ctx.fillStyle = "#c9c3b0";
+    ctx.fillRect(f.x - 14, f.y - 10, 12, 8);
+    ctx.fillStyle = "#6a5a48";
+    ctx.fillRect(f.x - 16, f.y + 8, 32, 3);
+  } else if (f.kind === "bench") {
+    ctx.fillStyle = "#5a4634";
+    ctx.fillRect(f.x - 14, f.y - 8, 28, 16);
+    ctx.fillStyle = "#8a6a3b";
+    ctx.fillRect(f.x - 10, f.y - 12, 8, 6);
+    ctx.fillRect(f.x + 2, f.y - 11, 10, 5);
+  } else if (f.kind === "door") {
+    ctx.fillStyle = "#2a2d24";
+    ctx.fillRect(f.x - 18, f.y - 4, 36, 12);
+    ctx.fillStyle = "#6b5344";
+    ctx.fillRect(f.x - 14, f.y - 2, 28, 8);
+  } else if (f.kind === "chest") {
+    ctx.fillStyle = "#8a6a3b";
+    ctx.fillRect(f.x - 10, f.y - 8, 20, 16);
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(f.x - 2, f.y - 2, 4, 6);
+  } else if (f.kind === "claim") {
+    ctx.fillStyle = "#6a8a4e";
+    ctx.fillRect(f.x - 3, f.y - 14, 4, 20);
+    ctx.fillStyle = "#c9c3b0";
+    ctx.fillRect(f.x + 1, f.y - 14, 12, 8);
+  } else {
+    ctx.fillStyle = "#6b5344";
+    ctx.fillRect(f.x - 9, f.y - 10, 18, 18);
+    ctx.fillStyle = "#3d3228";
+    ctx.fillRect(f.x - 6, f.y - 6, 5, 6);
+    ctx.fillRect(f.x + 2, f.y - 6, 5, 6);
+  }
   if (f.searched) {
     ctx.strokeStyle = "rgba(230,225,208,0.35)";
-    ctx.strokeRect(f.x - 8, f.y - 8, 16, 16);
+    ctx.strokeRect(f.x - 10, f.y - 10, 20, 20);
   }
 }
 
@@ -267,15 +380,27 @@ export function drawMinimap(ctx: CanvasRenderingContext2D, s: GameState, x: numb
   }
   const sx = w / (MAP_W * TILE);
   const sy = h / (MAP_H * TILE);
-  ctx.fillStyle = "#7a3a32";
-  ctx.fillRect(x + 1775, y, 0, 0);
-  // Rocky Mount blob
-  ctx.fillStyle = "rgba(80,70,60,0.8)";
-  const rm = { x: 326 * TILE, y: 60 * TILE };
-  ctx.fillRect(x + rm.x * sx - 10, y + rm.y * sy - 8, 22, 18);
-  ctx.fillStyle = "rgba(50,70,40,0.7)";
-  const fe = { x: 146 * TILE, y: 178 * TILE };
-  ctx.fillRect(x + fe.x * sx - 6, y + fe.y * sy - 5, 12, 10);
+  ctx.strokeStyle = "rgba(210, 190, 90, 0.9)";
+  ctx.lineWidth = 1.4;
+  for (const road of ROADS) {
+    if (road.w < 1) continue;
+    const p = road.pts;
+    if (p.length < 4) continue;
+    ctx.beginPath();
+    for (let i = 0; i + 1 < p.length; i += 2) {
+      const g = geoToWorld(p[i]!, p[i + 1]!);
+      const px = x + g.x * sx;
+      const py = y + g.y * sy;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle = "rgba(120, 70, 48, 0.9)";
+  for (const b of s.world.buildings) {
+    if (b.kind === "house" || b.kind === "ranch") continue;
+    ctx.fillRect(x + (b.x + b.w / 2) * sx - 1, y + (b.y + b.h / 2) * sy - 1, 2, 2);
+  }
   ctx.fillStyle = "#c9c3b0";
   ctx.fillRect(x + s.player.x * sx - 2, y + s.player.y * sy - 2, 4, 4);
 }

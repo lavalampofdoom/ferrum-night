@@ -4,11 +4,18 @@ export type Assets = {
   player: HTMLImageElement;
   zombie: HTMLImageElement;
   attack: HTMLImageElement;
+  brute: HTMLImageElement;
+  doe: HTMLImageElement;
+  buck: HTMLImageElement;
+  fawn: HTMLImageElement;
+  bear: HTMLImageElement;
+  cub: HTMLImageElement;
+  turkey: HTMLImageElement;
+  squirrel: HTMLImageElement;
   tiles: Record<string, HTMLImageElement>;
   buildings: Record<string, HTMLImageElement>;
   props: Record<string, HTMLImageElement>;
 };
-
 
 function load(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -37,25 +44,39 @@ export async function loadAssets(): Promise<Assets> {
     "hydrant",
     "picnic",
   ];
-  const [player, zombie, attack, ...rest] = await Promise.all([
-    load(publicUrl("/game/sprites/player.png")),
-    load(publicUrl("/game/sprites/zombie.png")),
-    load(publicUrl("/game/sprites/player-attack.png")),
-    ...tileNames.map((n) => load(publicUrl(`/game/tiles/${n}.png`))),
-    ...bld.map((n) => load(publicUrl(`/game/buildings/${n}.png`))),
-    ...props.map((n) => load(publicUrl(`/game/props/${n}.png`))),
+  const actors = ["player", "zombie", "player-attack", "brute", "doe", "buck", "fawn", "bear", "cub", "turkey", "squirrel"];
+  const [loadedActors, loadedTiles, loadedBld, loadedProps] = await Promise.all([
+    Promise.all(actors.map((n) => load(publicUrl(`/game/sprites/${n === "player-attack" ? "player-attack" : n}.png`)))),
+    Promise.all(tileNames.map((n) => load(publicUrl(`/game/tiles/${n}.png`)))),
+    Promise.all(bld.map((n) => load(publicUrl(`/game/buildings/${n}.png`)))),
+    Promise.all(props.map((n) => load(publicUrl(`/game/props/${n}.png`)))),
   ]);
   const tiles: Record<string, HTMLImageElement> = {};
   tileNames.forEach((n, i) => {
-    tiles[n] = rest[i]!;
+    tiles[n] = loadedTiles[i]!;
   });
   const buildings: Record<string, HTMLImageElement> = {};
   bld.forEach((n, i) => {
-    buildings[n] = rest[tileNames.length + i]!;
+    buildings[n] = loadedBld[i]!;
   });
   const propImgs: Record<string, HTMLImageElement> = {};
   props.forEach((n, i) => {
-    propImgs[n] = rest[tileNames.length + bld.length + i]!;
+    propImgs[n] = loadedProps[i]!;
   });
-  return { player, zombie, attack, tiles, buildings, props: propImgs };
+  return {
+    player: loadedActors[0]!,
+    zombie: loadedActors[1]!,
+    attack: loadedActors[2]!,
+    brute: loadedActors[3]!,
+    doe: loadedActors[4]!,
+    buck: loadedActors[5]!,
+    fawn: loadedActors[6]!,
+    bear: loadedActors[7]!,
+    cub: loadedActors[8]!,
+    turkey: loadedActors[9]!,
+    squirrel: loadedActors[10]!,
+    tiles,
+    buildings,
+    props: propImgs,
+  };
 }
