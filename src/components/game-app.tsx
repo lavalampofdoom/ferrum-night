@@ -60,6 +60,9 @@ export function GameApp() {
         onPause={() => engineRef.current?.pauseToggle()}
         onUse={(i) => engineRef.current?.useInv(i)}
         onCraft={(id) => engineRef.current?.craftId(id)}
+        onDrop={(i) => engineRef.current?.dropInv(i)}
+        onTake={(i) => engineRef.current?.takeContainer(i)}
+        onCloseLoot={() => engineRef.current?.closeLoot()}
         onStick={(x, y) => engineRef.current?.setStick(x, y)}
         onAttack={(v) => engineRef.current?.setAttack(v)}
         onAct={(v) => engineRef.current?.setUse(v)}

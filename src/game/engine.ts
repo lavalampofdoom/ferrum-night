@@ -7,11 +7,15 @@ import { cameraFor, drawFrame, drawMinimap } from "./render";
 import { clearSave, loadSave, writeSave } from "./save";
 import {
   applySave,
+  closeContainer,
   createState,
   currentCar,
+  dropItem,
   snapshotSave,
   stepParticles,
   stepSim,
+  storeInChest,
+  takeFromChest,
   useItem,
   type GameState,
 } from "./sim";
@@ -98,7 +102,7 @@ export class Engine {
     this.paused = false;
     this.running = true;
     this.last = performance.now();
-    useHud.getState().set({ screen: "play", invOpen: false, craftOpen: false });
+    useHud.getState().set({ screen: "play", invOpen: false, craftOpen: false, containerId: null });
     this.syncHud();
     requestAnimationFrame(this.frame);
   }
@@ -124,7 +128,35 @@ export class Engine {
 
   useInv(i: number) {
     if (!this.state) return;
-    useItem(this.state, i);
+    if (this.state.openChest) {
+      storeInChest(this.state, i);
+    } else {
+      useItem(this.state, i);
+    }
+    this.syncHud();
+  }
+
+  dropInv(i: number) {
+    if (!this.state) return;
+    dropItem(this.state, i);
+    this.syncHud();
+  }
+
+  takeContainer(i: number) {
+    if (!this.state) return;
+    takeFromChest(this.state, i);
+    this.syncHud();
+  }
+
+  storeContainer(i: number) {
+    if (!this.state) return;
+    storeInChest(this.state, i);
+    this.syncHud();
+  }
+
+  closeLoot() {
+    if (!this.state) return;
+    closeContainer(this.state);
     this.syncHud();
   }
 
@@ -159,17 +191,37 @@ export class Engine {
     this.last = now;
     this.acc += raw;
     const a = this.input.poll();
+    a.aimX = this.cam.x + this.input.pointerX / this.cam.scale;
+    a.aimY = this.cam.y + this.input.pointerY / this.cam.scale;
     const hud = useHud.getState();
     if (a.justPause) {
+      if (this.state?.openChest) {
+        closeContainer(this.state);
+        this.syncHud();
+        return;
+      }
+      if (hud.invOpen) {
+        hud.set({ invOpen: false, craftOpen: false });
+        return;
+      }
       this.pauseToggle();
       return;
     }
     if (a.justInv && this.state && hud.screen === "play") {
-      hud.set({ invOpen: !hud.invOpen, craftOpen: false });
+      if (this.state.openChest) {
+        closeContainer(this.state);
+        this.syncHud();
+      } else {
+        hud.set({ invOpen: !hud.invOpen, craftOpen: false });
+      }
+    }
+    if (this.state?.openChest && a.justUse) {
+      closeContainer(this.state);
+      this.syncHud();
     }
 
     while (this.acc >= FIXED_DT) {
-      if (this.state && hud.screen === "play" && !hud.invOpen) {
+      if (this.state && hud.screen === "play" && !hud.invOpen && !this.state.openChest) {
         const prevHp = this.state.player.hp;
         stepSim(this.state, a, FIXED_DT);
         stepParticles(this.state, FIXED_DT);
@@ -177,6 +229,7 @@ export class Engine {
         if (this.state.player.attackT > 0.4) this.audio.swing();
         if (this.state.dead) useHud.getState().set({ screen: "dead" });
         if (this.state.turned) useHud.getState().set({ screen: "turned" });
+        if (this.state.openChest) this.syncHud();
       }
       this.acc -= FIXED_DT;
     }
@@ -247,6 +300,11 @@ export class Engine {
       inCar: this.state.carId != null,
       gas: car?.gas ?? 0,
       gasMax: CAR_GAS,
+      containerId: this.state.openChest,
+      containerName: this.state.chestLabel,
+      containerSlots: this.state.openChest
+        ? (this.state.chests[this.state.openChest] ?? []).map((s) => ({ ...s }))
+        : [],
     });
   }
 
@@ -289,6 +347,11 @@ export class Engine {
           furn: s.interior?.furniture.map((f) => `${f.kind}:${f.look ?? ""}:${f.label}`) ?? [],
           benches,
           hint: s.hint,
+          openChest: s.openChest,
+          chestLabel: s.chestLabel,
+          drops: s.drops.length,
+          opaque: s.world.opaque.length,
+          walls: s.interior ? s.interior.blocked.reduce((n, v) => n + v, 0) : 0,
         };
       },
     };

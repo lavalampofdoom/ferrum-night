@@ -18,6 +18,9 @@ type Props = {
   onPause: () => void;
   onUse: (i: number) => void;
   onCraft: (id: string) => void;
+  onDrop: (i: number) => void;
+  onTake: (i: number) => void;
+  onCloseLoot: () => void;
   onStick: (x: number, y: number) => void;
   onAttack: (v: boolean) => void;
   onAct: (v: boolean) => void;
@@ -31,6 +34,9 @@ export function GameHud({
   onPause,
   onUse,
   onCraft,
+  onDrop,
+  onTake,
+  onCloseLoot,
   onStick,
   onAttack,
   onAct,
@@ -92,7 +98,11 @@ export function GameHud({
         onInv={() => useHud.getState().set({ invOpen: !hud.invOpen })}
       />
 
-      {hud.invOpen ? <Inventory onUse={onUse} onCraft={onCraft} /> : null}
+      {hud.containerId ? (
+        <LootPanel onTake={onTake} onStore={onUse} onDrop={onDrop} onClose={onCloseLoot} />
+      ) : hud.invOpen ? (
+        <Inventory onUse={onUse} onCraft={onCraft} onDrop={onDrop} />
+      ) : null}
       {hud.screen === "pause" ? <PauseMenu onResume={onPause} onNew={onNew} /> : null}
       {hud.screen === "dead" || hud.screen === "turned" ? (
         <EndCard turned={hud.screen === "turned"} onNew={onNew} />
@@ -165,7 +175,7 @@ function Title({
             {ready ? "Walk the road" : "Loading map…"}
           </button>
           <p className="self-center text-xs text-faint">
-            {signedIn ? "Progress saves on this device." : "WASD · E use · Space attack"}
+            {signedIn ? "Progress saves on this device." : "WASD · mouse aim · E use · Space strike"}
           </p>
         </div>
       </div>
@@ -173,7 +183,15 @@ function Title({
   );
 }
 
-function Inventory({ onUse, onCraft }: { onUse: (i: number) => void; onCraft: (id: string) => void }) {
+function Inventory({
+  onUse,
+  onCraft,
+  onDrop,
+}: {
+  onUse: (i: number) => void;
+  onCraft: (id: string) => void;
+  onDrop: (i: number) => void;
+}) {
   const hud = useHud();
   const close = () => useHud.getState().set({ invOpen: false, craftOpen: false });
   return (
@@ -189,19 +207,29 @@ function Inventory({ onUse, onCraft }: { onUse: (i: number) => void; onCraft: (i
           {Array.from({ length: 24 }).map((_, i) => {
             const s = hud.inv[i];
             return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => s && onUse(i)}
-                className="flex h-16 flex-col items-center justify-center rounded-lg bg-raised text-center text-[10px] text-muted ring-1 ring-border"
-              >
+              <div key={i} className="flex h-16 flex-col rounded-lg bg-raised ring-1 ring-border">
+                <button
+                  type="button"
+                  onClick={() => s && onUse(i)}
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center text-center text-[10px] text-muted"
+                >
+                  {s ? (
+                    <>
+                      <span className="px-1 text-fg">{ITEMS[s.id]?.name}</span>
+                      <span className="font-mono">{s.n}</span>
+                    </>
+                  ) : null}
+                </button>
                 {s ? (
-                  <>
-                    <span className="px-1 text-fg">{ITEMS[s.id]?.name}</span>
-                    <span className="font-mono">{s.n}</span>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => onDrop(i)}
+                    className="pb-1 font-mono text-[9px] text-faint hover:text-fg"
+                  >
+                    Drop
+                  </button>
                 ) : null}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -239,12 +267,101 @@ function Inventory({ onUse, onCraft }: { onUse: (i: number) => void; onCraft: (i
   );
 }
 
+function LootPanel({
+  onTake,
+  onStore,
+  onDrop,
+  onClose,
+}: {
+  onTake: (i: number) => void;
+  onStore: (i: number) => void;
+  onDrop: (i: number) => void;
+  onClose: () => void;
+}) {
+  const hud = useHud();
+  return (
+    <div className="absolute inset-0 z-30 flex items-end justify-center bg-bg/60 p-3 sm:items-center">
+      <div className="max-h-[85dvh] w-full max-w-3xl overflow-auto rounded-2xl bg-surface p-4 ring-1 ring-border">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-display text-lg">{hud.containerName || "Container"}</h2>
+          <button type="button" onClick={onClose} className="text-sm text-muted">
+            Close
+          </button>
+        </div>
+        <p className="mb-3 text-xs text-muted">
+          Take from the left. Store from the pack on the right. Drop leaves it on the floor.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <h3 className="mb-2 font-display text-sm text-muted">Inside</h3>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {Array.from({ length: 12 }).map((_, i) => {
+                const s = hud.containerSlots[i];
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => s && onTake(i)}
+                    className="flex h-16 flex-col items-center justify-center rounded-lg bg-raised text-center text-[10px] text-muted ring-1 ring-border"
+                  >
+                    {s ? (
+                      <>
+                        <span className="px-1 text-fg">{ITEMS[s.id]?.name}</span>
+                        <span className="font-mono">{s.n}</span>
+                      </>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <h3 className="mb-2 font-display text-sm text-muted">Your pack</h3>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {Array.from({ length: 24 }).map((_, i) => {
+                const s = hud.inv[i];
+                return (
+                  <div key={i} className="flex h-16 flex-col rounded-lg bg-raised ring-1 ring-border">
+                    <button
+                      type="button"
+                      onClick={() => s && onStore(i)}
+                      className="flex min-h-0 flex-1 flex-col items-center justify-center text-center text-[10px] text-muted"
+                    >
+                      {s ? (
+                        <>
+                          <span className="px-1 text-fg">{ITEMS[s.id]?.name}</span>
+                          <span className="font-mono">{s.n}</span>
+                        </>
+                      ) : null}
+                    </button>
+                    {s ? (
+                      <button
+                        type="button"
+                        onClick={() => onDrop(i)}
+                        className="pb-1 font-mono text-[9px] text-faint hover:text-fg"
+                      >
+                        Drop
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PauseMenu({ onResume, onNew }: { onResume: () => void; onNew: () => void }) {
   return (
     <div className="absolute inset-0 z-40 grid place-items-center bg-bg/70 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-surface p-6 ring-1 ring-border">
         <h2 className="font-display text-2xl">Paused</h2>
-        <p className="mt-2 text-sm text-muted">WASD walk · E use · Space strike · I pack · cars W/S drive, A/D steer</p>
+        <p className="mt-2 text-sm text-muted">
+          WASD walk · mouse aims · Space strike · E search · I pack · drop from the pack
+        </p>
         <div className="mt-5 flex flex-col gap-2">
           <button type="button" onClick={onResume} className="rounded-xl bg-accent px-4 py-3 text-accent-fg">
             Resume

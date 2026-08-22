@@ -152,15 +152,18 @@ export function GuidePage() {
           <h2 className="font-display text-2xl">Controls</h2>
           <dl className="mt-4 grid gap-2 sm:grid-cols-2">
             <Row k="WASD" v="Walk. Shift sprints. Faster on asphalt, slower in woods and crops." />
-            <Row k="E" v="Hand: enter, search, sleep, claim, lock, enter a car, use a bench." />
-            <Row k="Space" v="Strike. Bat drops a walker in 2–4 hits. Guns need matching ammo." />
+            <Row k="Mouse" v="Aim in any direction. Space or click strikes that way." />
+            <Row k="E" v="Hand: enter, search, sleep, claim, lock, enter a car, pick up a drop." />
+            <Row k="Search" v="Crates and cabinets open a shared inventory. Take, leave, or store. Drop extras from the pack." />
+            <Row k="Space" v="Melee only lands up close. Guns need matching ammo." />
             <Row k="I" v="Open the pack (backpack). Craft by hand, or all recipes at a bench." />
             <Row k="Touch" v="Left pad to move. Hand / knife / backpack on the right." />
             <Row k="Locks" v="Some houses start locked. Bash the door. Lock or unlock from inside if the door still exists." />
             <Row k="Walkers inside" v="Some houses hide 1–5 walkers. Unlocked doors let more in. Broken doors are faster." />
             <Row k="Cars" v="E enter. W/S drive, A/D steer. ~2 min of gas. Ram walkers. Safe inside. Refill with a gas can." />
+            <Row k="Sight" v="You cannot see through walls or the far side of a house. Stay close." />
             <Row k="Ground" v="Roads are quick and marked. Forest and tall grass drag. Water and walls stop you. Tree trunks are solid." />
-            <Row k="Walkers" v="Normal bites take seven hits to drop you. Rare brutes take two. Keep a bat or a door between you." />
+            <Row k="Walkers" v="Normal bites take seven hits to drop you. Rare brutes take two. They have to close in." />
             <Row k="Fever" v="Bites infect. Antibiotics at the clinic stop the turn." />
           </dl>
           <Link

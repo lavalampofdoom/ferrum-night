@@ -5,6 +5,7 @@ import {
   CAR_GAS,
   CAR_RADIUS,
   CAR_SPEED,
+  CONTAINER_CAP,
   CUB_RADIUS,
   INFECTION_TIME,
   MAP_H,
@@ -20,7 +21,7 @@ import {
   ZOMBIE_TOWN_SPEED,
 } from "./constants";
 import type { Actions } from "./input";
-import { ITEMS, addItem, rollLoot, takeItem, type Slot } from "./items";
+import { ITEMS, addItem, moveSlot, rollLoot, takeItem, type Slot } from "./items";
 import { SAVE_VERSION } from "./save";
 import {
   blockedAt,
@@ -58,6 +59,14 @@ export type Particle = {
   max: number;
   color: string;
   s: number;
+};
+
+export type GroundDrop = {
+  id: number;
+  x: number;
+  y: number;
+  slot: Slot;
+  inside: string | null;
 };
 
 export type Player = {
@@ -102,6 +111,10 @@ export type GameState = {
   atBench: boolean;
   carId: number | null;
   placedBenches: Record<string, { x: number; y: number }[]>;
+  openChest: string | null;
+  chestLabel: string;
+  drops: GroundDrop[];
+  dropSeq: number;
 };
 
 const FACE_VEC = [
@@ -152,6 +165,10 @@ export function createState(world: World, rng = mulberry32(40)): GameState {
     atBench: false,
     carId: null,
     placedBenches: {},
+    openChest: null,
+    chestLabel: "",
+    drops: [],
+    dropSeq: 1,
   };
 }
 
@@ -209,6 +226,14 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
     const dist = Math.hypot(p.x - ox, p.y - oy);
     p.moving = dist > 0.2;
     if (p.moving) p.walk += dist * 0.14;
+    if (a.aimOn) {
+      const adx = a.aimX - p.x;
+      const ady = a.aimY - p.y;
+      if (Math.hypot(adx, ady) > 10) {
+        if (Math.abs(adx) > Math.abs(ady)) p.facing = adx < 0 ? 1 : 2;
+        else p.facing = ady < 0 ? 3 : 0;
+      }
+    }
   }
 
   s.atBench = false;
@@ -254,6 +279,12 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
           toast(s, "Wood gathered.");
         }
       }
+    } else if (!nearB && !nearCar) {
+      const drop = nearestDrop(s, 22);
+      if (drop) {
+        s.hint = `Pick up ${ITEMS[drop.slot.id]?.name ?? "item"}`;
+        if (a.justUse) pickupDrop(s, drop);
+      }
     }
   }
 
@@ -277,6 +308,12 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
       if (closest.kind === "claim" && s.claimed.has(s.interior.buildingId)) s.hint = "Your home";
       else s.hint = closest.label;
       if (a.justUse) useFurniture(s, closest);
+    } else {
+      const drop = nearestDrop(s, 22);
+      if (drop) {
+        s.hint = `Pick up ${ITEMS[drop.slot.id]?.name ?? "item"}`;
+        if (a.justUse) pickupDrop(s, drop);
+      }
     }
   }
 
@@ -285,7 +322,7 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
     !inCar &&
     !!nearestBuilding(s, 46)?.locked &&
     !nearestBuilding(s, 46)?.doorBroken;
-  if (a.justAttack && p.attackT <= 0 && !bashingLocked && !inCar) doAttack(s);
+  if (a.justAttack && p.attackT <= 0 && !bashingLocked && !inCar) doAttack(s, a);
 
   stepBullets(s, dt);
   stepWildlife(s, dt);
@@ -491,6 +528,8 @@ export function leaveBuilding(s: GameState) {
   s.player.y = s.returnY;
   s.interior = null;
   s.atBench = false;
+  s.openChest = null;
+  s.chestLabel = "";
 }
 
 function lootTableFor(b: Building | undefined): string {
@@ -536,29 +575,9 @@ function useFurniture(s: GameState, f: Interact) {
     toast(s, "Workbench — open the pack to craft.");
     return;
   }
-  if (f.kind === "chest") {
-    toast(s, "Storage — items stay in this house.");
+  if (f.kind === "chest" || f.kind === "loot") {
+    openContainer(s, f, b);
     return;
-  }
-  if (f.kind === "loot") {
-    if (s.searched.has(f.id)) {
-      toast(s, "Already searched.");
-      return;
-    }
-    s.searched.add(f.id);
-    const table = lootTableFor(b);
-    const loot = rollLoot(table, s.rng, 2 + Math.floor(s.rng() * 2));
-    if (table === "farm" && /crate/i.test(f.label) && s.rng() < 0.42) {
-      const existing = loot.find((l) => l.id === "hatchet");
-      if (existing) existing.n += 1;
-      else loot.push({ id: "hatchet", n: 1 });
-    }
-    const names: string[] = [];
-    for (const l of loot) {
-      addItem(p.inv, l.id, l.n);
-      names.push(`${ITEMS[l.id]?.name ?? l.id} x${l.n}`);
-    }
-    toast(s, names.join(", ") || "Nothing useful.");
   }
 }
 
@@ -597,11 +616,100 @@ function refillCar(s: GameState, amount: number) {
   return true;
 }
 
-function doAttack(s: GameState) {
+function openContainer(s: GameState, f: Interact, b: Building | undefined) {
+  if (!s.chests[f.id]) {
+    if (f.kind === "loot") {
+      const table = lootTableFor(b);
+      const loot = rollLoot(table, s.rng, 2 + Math.floor(s.rng() * 2));
+      if (table === "farm" && /crate/i.test(f.label) && s.rng() < 0.42) {
+        const existing = loot.find((l) => l.id === "hatchet");
+        if (existing) existing.n += 1;
+        else loot.push({ id: "hatchet", n: 1 });
+      }
+      const slots: Slot[] = [];
+      for (const l of loot) addItem(slots, l.id, l.n, CONTAINER_CAP);
+      s.chests[f.id] = slots;
+    } else {
+      s.chests[f.id] = [];
+    }
+  }
+  s.searched.add(f.id);
+  s.openChest = f.id;
+  s.chestLabel = f.label.replace(/^Search /i, "") || "Container";
+}
+
+function nearestDrop(s: GameState, r: number): GroundDrop | null {
+  const inside = s.interior?.buildingId ?? null;
+  let best: GroundDrop | null = null;
+  let d = r;
+  for (const drop of s.drops) {
+    if ((drop.inside ?? null) !== inside) continue;
+    const dist = Math.hypot(drop.x - s.player.x, drop.y - s.player.y);
+    if (dist < d) {
+      d = dist;
+      best = drop;
+    }
+  }
+  return best;
+}
+
+function pickupDrop(s: GameState, drop: GroundDrop) {
+  if (!addItem(s.player.inv, drop.slot.id, drop.slot.n)) {
+    toast(s, "Pack is full.");
+    return;
+  }
+  s.drops = s.drops.filter((d) => d.id !== drop.id);
+  toast(s, `${ITEMS[drop.slot.id]?.name ?? "Item"} taken.`);
+}
+
+export function closeContainer(s: GameState) {
+  s.openChest = null;
+  s.chestLabel = "";
+}
+
+export function takeFromChest(s: GameState, index: number) {
+  if (!s.openChest) return;
+  const box = s.chests[s.openChest];
+  if (!box) return;
+  if (!moveSlot(box, s.player.inv, index, 24)) toast(s, "Pack is full.");
+}
+
+export function storeInChest(s: GameState, index: number) {
+  if (!s.openChest) return;
+  const box = s.chests[s.openChest] ?? (s.chests[s.openChest] = []);
+  if (!moveSlot(s.player.inv, box, index, CONTAINER_CAP)) toast(s, "No room in there.");
+}
+
+export function dropItem(s: GameState, index: number) {
+  const slot = s.player.inv[index];
+  if (!slot) return;
+  s.player.inv.splice(index, 1);
+  s.dropSeq += 1;
+  s.drops.push({
+    id: s.dropSeq,
+    x: s.player.x + (s.rng() - 0.5) * 8,
+    y: s.player.y + 6,
+    slot: { ...slot },
+    inside: s.interior?.buildingId ?? null,
+  });
+  toast(s, `Dropped ${ITEMS[slot.id]?.name ?? "item"}.`);
+}
+
+function aimDir(s: GameState, a: Actions): { x: number; y: number } {
+  if (a.aimOn) {
+    const dx = a.aimX - s.player.x;
+    const dy = a.aimY - s.player.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 8) return { x: dx / d, y: dy / d };
+  }
+  return FACE_VEC[s.player.facing] ?? FACE_VEC[0]!;
+}
+
+function doAttack(s: GameState, a: Actions) {
   const p = s.player;
   const wep = ITEMS[p.weapon] ?? ITEMS.fists!;
   p.attackT = wep.rate ?? 0.45;
-  const dir = FACE_VEC[p.facing] ?? FACE_VEC[0]!;
+  const dir = aimDir(s, a);
   const zeds = activeZombies(s);
 
   if (wep.kind === "ranged") {
@@ -858,7 +966,7 @@ function stepZombiesOn(
     const town = indoor ? false : inTown(z.x, z.y);
     const detect = z.paintT > 0 ? 40 : indoor ? 280 : town ? 220 : 130;
     const zR = zombieRadius(z);
-    const biteR = PLAYER_RADIUS + zR + 5;
+    const biteR = PLAYER_RADIUS + zR + 1;
     const ground = tileSpeed(tileAt(tiles, z.x, z.y, bw));
     const painted = z.paintT > 0;
     const base =
@@ -1222,6 +1330,7 @@ export function snapshotSave(s: GameState) {
     benches: s.placedBenches,
     cars: s.world.cars.map((c) => ({ id: c.id, x: c.x, y: c.y, ang: c.ang, gas: c.gas })),
     carId: s.carId,
+    drops: s.drops,
     zeds: s.world.zombies.map((z) => ({
       id: z.id,
       x: z.x,
@@ -1254,6 +1363,7 @@ export function applySave(
     cars?: { id: number; x: number; y: number; ang: number; gas: number }[];
     carId?: number | null;
     zeds?: { id: number; x: number; y: number; hp: number; alive: boolean; inside: string | null }[];
+    drops?: { id: number; x: number; y: number; slot: Slot; inside: string | null }[];
   },
 ) {
   s.player.x = data.x;
@@ -1312,4 +1422,6 @@ export function applySave(
       z.inside = saved.inside;
     }
   }
+  s.drops = (data.drops ?? []).map((d) => ({ ...d, slot: { ...d.slot } }));
+  s.dropSeq = s.drops.reduce((m, d) => Math.max(m, d.id), 1);
 }

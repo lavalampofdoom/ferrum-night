@@ -1,6 +1,6 @@
 import type { Slot } from "./items";
 
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
 const KEY = "ferrum-night-save";
 const BACK = "ferrum-night-save-bak";
 
@@ -25,6 +25,7 @@ export type SaveData = {
   cars?: { id: number; x: number; y: number; ang: number; gas: number }[];
   carId?: number | null;
   zeds?: { id: number; x: number; y: number; hp: number; alive: boolean; inside: string | null }[];
+  drops?: { id: number; x: number; y: number; slot: Slot; inside: string | null }[];
 };
 
 export function loadSave(): SaveData | null {

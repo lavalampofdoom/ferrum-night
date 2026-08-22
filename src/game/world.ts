@@ -8,6 +8,7 @@ import {
   TILE,
   TREE_RADIUS,
   DOOR_HP,
+  BUILDING_INSET,
   type TileId,
 } from "./constants";
 import { HOUSES, LANDMARKS, ROADS, STREETS, WATERWAYS, type GeoPlace, type GeoRoad } from "./geo-data";
@@ -135,6 +136,7 @@ export type Interior = {
 export type World = {
   tiles: Uint8Array;
   blocked: Uint8Array;
+  opaque: Uint8Array;
   buildings: Building[];
   trees: Tree[];
   props: Prop[];
@@ -240,7 +242,7 @@ function clampSize(kind: BldKind, tw: number, th: number): { tw: number; th: num
 function overlaps(buildings: Building[], x: number, y: number, w: number, h: number): boolean {
   const cx = x + w / 2;
   const cy = y + h / 2;
-  const minD = Math.max(58, (w + h) / 2);
+  const minD = Math.max(44, (w + h) / 2 - 10);
   for (const b of buildings) {
     const d = Math.hypot(cx - (b.x + b.w / 2), cy - (b.y + b.h / 2));
     if (d < minD) return true;
@@ -248,7 +250,13 @@ function overlaps(buildings: Building[], x: number, y: number, w: number, h: num
   return false;
 }
 
-function placeFrom(lm: GeoPlace, buildings: Building[], tiles: Uint8Array, blocked: Uint8Array, force: boolean) {
+function placeFrom(
+  lm: GeoPlace,
+  buildings: Building[],
+  tiles: Uint8Array,
+  opaque: Uint8Array,
+  force: boolean,
+) {
   const p = geoToWorld(lm.lat, lm.lng);
   const { tw, th } = clampSize(lm.kind, lm.tw, lm.th);
   const w = tw * TILE;
@@ -280,7 +288,7 @@ function placeFrom(lm: GeoPlace, buildings: Building[], tiles: Uint8Array, block
     b.locked = false;
   }
   buildings.push(b);
-  footprint(tiles, blocked, b);
+  footprint(tiles, opaque, b);
   if (lm.kind === "kfc" || lm.kind === "lowes" || lm.kind === "gas" || lm.kind === "clinic") {
     const t0 = Math.floor((b.x - 8) / TILE);
     const t1 = Math.floor((b.y + b.h) / TILE);
@@ -292,6 +300,7 @@ export function generateWorld(seed = 40): World {
   const rng = mulberry32(seed);
   const tiles = new Uint8Array(W * H);
   const blocked = new Uint8Array(W * H);
+  const opaque = new Uint8Array(W * H);
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -311,8 +320,8 @@ export function generateWorld(seed = 40): World {
   for (const road of STREETS) paintPoly(tiles, road, false);
 
   const buildings: Building[] = [];
-  for (const lm of LANDMARKS) placeFrom(lm, buildings, tiles, blocked, true);
-  for (const h of HOUSES) placeFrom(h, buildings, tiles, blocked, false);
+  for (const lm of LANDMARKS) placeFrom(lm, buildings, tiles, opaque, true);
+  for (const h of HOUSES) placeFrom(h, buildings, tiles, opaque, false);
 
   const trees: Tree[] = [];
   let tid = 0;
@@ -414,6 +423,7 @@ export function generateWorld(seed = 40): World {
   return {
     tiles,
     blocked,
+    opaque,
     buildings,
     trees,
     props,
@@ -427,17 +437,15 @@ export function generateWorld(seed = 40): World {
   };
 }
 
-function footprint(tiles: Uint8Array, blocked: Uint8Array, b: Building) {
+function footprint(tiles: Uint8Array, opaque: Uint8Array, b: Building) {
   const x0 = Math.floor(b.x / TILE);
   const y0 = Math.floor(b.y / TILE);
   const x1 = Math.ceil((b.x + b.w) / TILE);
   const y1 = Math.ceil((b.y + b.h) / TILE);
-  const doorTx = Math.floor(b.doorX / TILE);
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       if (!inMap(x, y)) continue;
-      const isDoor = Math.abs(x - doorTx) <= 1 && y >= y1 - 1;
-      if (!isDoor) blocked[idx(x, y)] = 1;
+      opaque[idx(x, y)] = 1;
       const cur = tiles[idx(x, y)];
       if (cur !== T.ASPHALT && cur !== T.PARKING && cur !== T.LINE) {
         tiles[idx(x, y)] = T.DIRT;
@@ -749,7 +757,63 @@ export function solidHit(world: World, x: number, y: number, r: number): boolean
     const dy = p.y - y;
     if (dx * dx + dy * dy < (r + pr) * (r + pr)) return true;
   }
+  for (const b of world.buildings) {
+    if (buildingBlocked(b, x, y, r)) return true;
+  }
   return false;
+}
+
+function buildingBlocked(b: Building, x: number, y: number, r: number): boolean {
+  const pad = BUILDING_INSET;
+  const left = b.x + pad;
+  const right = b.x + b.w - pad;
+  const top = b.y + pad;
+  const bot = b.y + b.h - pad;
+  if (right <= left || bot <= top) return false;
+  const cx = Math.max(left, Math.min(right, x));
+  const cy = Math.max(top, Math.min(bot, y));
+  const dx = x - cx;
+  const dy = y - cy;
+  if (dx * dx + dy * dy >= r * r) return false;
+  const doorHalf = 16;
+  if (y > bot - 8 && x > b.doorX - doorHalf && x < b.doorX + doorHalf) return false;
+  return true;
+}
+
+export function hasLos(
+  opaque: Uint8Array,
+  bw: number,
+  bh: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): boolean {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 6) return true;
+  const n = Math.ceil(dist / 4);
+  const tx0 = Math.floor(x0 / TILE);
+  const ty0 = Math.floor(y0 / TILE);
+  const tx1 = Math.floor(x1 / TILE);
+  const ty1 = Math.floor(y1 / TILE);
+  const originOpaque = tx0 >= 0 && ty0 >= 0 && tx0 < bw && ty0 < bh && !!opaque[ty0 * bw + tx0];
+  const grace = TILE * TILE;
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    const x = x0 + dx * t;
+    const y = y0 + dy * t;
+    const tx = Math.floor(x / TILE);
+    const ty = Math.floor(y / TILE);
+    if (tx < 0 || ty < 0 || tx >= bw || ty >= bh) return false;
+    if (opaque[ty * bw + tx]) {
+      if (tx === tx1 && ty === ty1) return true;
+      if (originOpaque && (x - x0) * (x - x0) + (y - y0) * (y - y0) < grace) continue;
+      return false;
+    }
+  }
+  return true;
 }
 
 export function locationName(world: World, x: number, y: number): string {
@@ -891,56 +955,69 @@ function placeLayout(
   layout: InteriorLayout,
 ) {
   const mid = Math.floor(w / 2);
+  const hall = h - 4;
   if (layout === "house") {
-    vWall(tiles, blocked, w, h, 5, 1, h - 2, [4]);
+    hWall(tiles, blocked, w, h, hall, 1, w - 2, [mid]);
+    vWall(tiles, blocked, w, h, 5, 1, hall, [3]);
   } else if (layout === "ranch") {
-    vWall(tiles, blocked, w, h, 4, 1, h - 2, [h - 4]);
-    vWall(tiles, blocked, w, h, 9, 1, h - 2, [h - 4]);
+    hWall(tiles, blocked, w, h, hall, 1, w - 2, [3, 8, 11]);
+    vWall(tiles, blocked, w, h, 4, 1, hall, [3]);
+    vWall(tiles, blocked, w, h, 9, 1, hall, [3]);
   } else if (layout === "shop") {
     hWall(tiles, blocked, w, h, 5, 1, w - 2, [mid]);
+    vWall(tiles, blocked, w, h, 4, 1, 5, [3]);
+    vWall(tiles, blocked, w, h, w - 5, 5, h - 2, [7]);
   } else if (layout === "clinic") {
-    hWall(tiles, blocked, w, h, 5, 1, w - 2, [3, mid, w - 4]);
-    hWall(tiles, blocked, w, h, 9, 1, w - 2, [4, mid, w - 5]);
-    vWall(tiles, blocked, w, h, 7, 1, 5, [5]);
-    vWall(tiles, blocked, w, h, 13, 1, 5, [5]);
+    hWall(tiles, blocked, w, h, 5, 1, w - 2, [mid]);
+    hWall(tiles, blocked, w, h, 9, 1, w - 2, [mid]);
+    vWall(tiles, blocked, w, h, 7, 1, 5, [4]);
+    vWall(tiles, blocked, w, h, 13, 1, 5, [4]);
+    vWall(tiles, blocked, w, h, 7, 9, h - 2, [11]);
+    vWall(tiles, blocked, w, h, 13, 9, h - 2, [11]);
   } else if (layout === "church") {
     hWall(tiles, blocked, w, h, 5, 1, w - 2, [mid]);
-    vWall(tiles, blocked, w, h, 3, 6, h - 3, []);
-    vWall(tiles, blocked, w, h, w - 4, 6, h - 3, []);
+    vWall(tiles, blocked, w, h, 3, 6, h - 3, [10]);
+    vWall(tiles, blocked, w, h, w - 4, 6, h - 3, [10]);
+    hWall(tiles, blocked, w, h, h - 4, 1, w - 2, [mid]);
   } else if (layout === "civic") {
     vWall(tiles, blocked, w, h, 7, 1, h - 2, [h - 5]);
     vWall(tiles, blocked, w, h, w - 8, 1, h - 2, [h - 5]);
     hWall(tiles, blocked, w, h, 7, 8, w - 9, [mid]);
+    hWall(tiles, blocked, w, h, h - 4, 1, w - 2, [mid]);
   } else if (layout === "warehouse") {
+    hWall(tiles, blocked, w, h, h - 4, 1, w - 2, [mid]);
     for (let x = 5; x < w - 4; x += 5) {
       if (Math.abs(x - mid) <= 1) continue;
-      vWall(tiles, blocked, w, h, x, 2, h - 3, [4, Math.floor(h / 2), h - 5]);
+      vWall(tiles, blocked, w, h, x, 2, h - 5, [4, Math.floor(h / 2)]);
     }
   } else if (layout === "hall") {
-    hWall(tiles, blocked, w, h, 8, 1, w - 2, [4, mid, w - 5]);
-    vWall(tiles, blocked, w, h, 7, 1, 8, [8]);
-    vWall(tiles, blocked, w, h, 15, 1, 8, [8]);
+    hWall(tiles, blocked, w, h, 8, 1, w - 2, [mid]);
+    vWall(tiles, blocked, w, h, 7, 1, 8, [6]);
+    vWall(tiles, blocked, w, h, 15, 1, 8, [6]);
     vWall(tiles, blocked, w, h, 7, 8, h - 2, [h - 4]);
     vWall(tiles, blocked, w, h, 15, 8, h - 2, [h - 4]);
+    hWall(tiles, blocked, w, h, h - 4, 1, w - 2, [mid]);
   } else if (layout === "school") {
-    hWall(tiles, blocked, w, h, 8, 1, w - 2, [5, mid, w - 5]);
+    hWall(tiles, blocked, w, h, 8, 1, w - 2, [mid]);
     for (let x = 6; x < w - 4; x += 8) {
       if (Math.abs(x - mid) <= 1) continue;
-      vWall(tiles, blocked, w, h, x, 1, 8, [8]);
+      vWall(tiles, blocked, w, h, x, 1, 8, [6]);
     }
     for (let x = 6; x < w - 4; x += 8) {
       if (Math.abs(x - mid) <= 1) continue;
       vWall(tiles, blocked, w, h, x, 8, h - 2, [h - 4]);
     }
+    hWall(tiles, blocked, w, h, h - 4, 1, w - 2, [mid]);
   } else if (layout === "college") {
-    hWall(tiles, blocked, w, h, 13, 1, w - 2, [6, 15, mid, 28, 36]);
-    hWall(tiles, blocked, w, h, 17, 1, w - 2, [6, 16, mid, 26, 36]);
+    hWall(tiles, blocked, w, h, 13, 1, w - 2, [mid, 15]);
+    hWall(tiles, blocked, w, h, 17, 1, w - 2, [mid, 16]);
     for (const x of [8, 16, 26, 34]) {
-      vWall(tiles, blocked, w, h, x, 1, 13, [12]);
+      vWall(tiles, blocked, w, h, x, 1, 13, [11]);
     }
     for (const x of [8, 16, 26, 34]) {
-      vWall(tiles, blocked, w, h, x, 17, h - 2, [18]);
+      vWall(tiles, blocked, w, h, x, 17, h - 2, [19]);
     }
+    hWall(tiles, blocked, w, h, h - 4, 1, w - 2, [mid]);
   }
 }
 
@@ -959,7 +1036,7 @@ function layoutSpots(b: Building, w: number, h: number, layout: InteriorLayout):
   ];
   const add = (kind: Interact["kind"], label: string, tx: number, ty: number, look?: string) => {
     const x = Math.max(2, Math.min(w - 3, tx));
-    const y = Math.max(2, Math.min(h - 4, ty));
+    const y = Math.max(2, Math.min(h - 3, ty));
     spots.push({
       id: `${b.id}-${kind}-${spots.length}`,
       kind,
@@ -974,20 +1051,20 @@ function layoutSpots(b: Building, w: number, h: number, layout: InteriorLayout):
 
   if (layout === "house") {
     add("loot", "Search cabinet", 2, 2, "cabinet");
-    add("loot", "Search crate", 2, 4, "crate");
-    add("loot", "Search shelves", 3, 3, "shelf");
+    add("loot", "Search crate", 2, 3, "crate");
+    add("loot", "Search shelves", 3, 2, "shelf");
     if (b.claimable) {
       add("bed", "Bed", 7, 2, "bed");
-      add("chest", "Dresser", 7, 4, "dresser");
+      add("chest", "Dresser", 7, 3, "dresser");
       add("claim", b.claimed ? "Home" : "Claim as home", 8, 5);
     }
   } else if (layout === "ranch") {
     add("loot", "Search kitchen", 2, 2, "kitchen");
     add("loot", "Search closet", 6, 2, "cabinet");
     add("loot", "Search crate", 11, 2, "crate");
-    add("loot", "Search shelves", 2, 6, "shelf");
+    add("loot", "Search shelves", 2, 5, "shelf");
     if (b.claimable) {
-      add("bed", "Bed", 12, 6, "bed");
+      add("bed", "Bed", 12, 7, "bed");
       add("claim", b.claimed ? "Home" : "Claim as home", 11, 4);
     }
   } else if (layout === "shop") {
@@ -1052,7 +1129,7 @@ function layoutSpots(b: Building, w: number, h: number, layout: InteriorLayout):
     id: `${b.id}-lock`,
     kind: "lock",
     x: (doorX - 2) * TILE + 16,
-    y: (doorY - 2) * TILE + 16,
+    y: (doorY - 1) * TILE + 16,
     r: 22,
     label: "Lock door",
     look: "lock",

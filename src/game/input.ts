@@ -10,6 +10,9 @@ export type Actions = {
   justUse: boolean;
   justInv: boolean;
   justPause: boolean;
+  aimX: number;
+  aimY: number;
+  aimOn: boolean;
 };
 
 const GAME_KEYS = new Set([
@@ -38,6 +41,7 @@ export class Input {
   pointerX = 0;
   pointerY = 0;
   pointerDown = false;
+  pointerLive = false;
   stickX = 0;
   stickY = 0;
   btnAttack = false;
@@ -61,6 +65,7 @@ export class Input {
       const r = el.getBoundingClientRect();
       this.pointerX = e.clientX - r.left;
       this.pointerY = e.clientY - r.top;
+      this.pointerLive = true;
     };
     const pd = (e: PointerEvent) => {
       if (e.button === 0) this.pointerDown = true;
@@ -125,6 +130,9 @@ export class Input {
       justUse: use && !this.prevUse,
       justInv: inv && !this.prevInv,
       justPause: pause && !this.prevPause,
+      aimX: 0,
+      aimY: 0,
+      aimOn: this.pointerLive,
     };
     this.prevAttack = attack;
     this.prevUse = use;
@@ -151,6 +159,9 @@ function emptyActions(): Actions {
     justUse: false,
     justInv: false,
     justPause: false,
+    aimX: 0,
+    aimY: 0,
+    aimOn: false,
   };
 }
 

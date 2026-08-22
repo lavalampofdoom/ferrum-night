@@ -47,10 +47,10 @@ export const ITEMS: Record<string, ItemDef> = {
   paint: { id: "paint", name: "Paintballs", kind: "ammo", stack: 40 },
   bullets: { id: "bullets", name: "9mm", kind: "ammo", stack: 48 },
   shells: { id: "shells", name: "12 Gauge", kind: "ammo", stack: 16 },
-  fists: { id: "fists", name: "Bare Hands", kind: "weapon", stack: 1, dmg: 6, rate: 0.4, range: 26 },
-  knife: { id: "knife", name: "Kitchen Knife", kind: "weapon", stack: 1, dmg: 12, rate: 0.32, range: 28 },
-  bat: { id: "bat", name: "Baseball Bat", kind: "weapon", stack: 1, dmg: 28, rate: 0.5, range: 40 },
-  machete: { id: "machete", name: "Machete", kind: "weapon", stack: 1, dmg: 32, rate: 0.46, range: 36 },
+  fists: { id: "fists", name: "Bare Hands", kind: "weapon", stack: 1, dmg: 6, rate: 0.4, range: 14 },
+  knife: { id: "knife", name: "Kitchen Knife", kind: "weapon", stack: 1, dmg: 12, rate: 0.32, range: 16 },
+  bat: { id: "bat", name: "Baseball Bat", kind: "weapon", stack: 1, dmg: 28, rate: 0.5, range: 22 },
+  machete: { id: "machete", name: "Machete", kind: "weapon", stack: 1, dmg: 32, rate: 0.46, range: 20 },
   crowbar: {
     id: "crowbar",
     name: "Crowbar",
@@ -58,7 +58,7 @@ export const ITEMS: Record<string, ItemDef> = {
     stack: 1,
     dmg: 22,
     rate: 0.52,
-    range: 34,
+    range: 18,
     tool: "pry",
   },
   hatchet: {
@@ -68,7 +68,7 @@ export const ITEMS: Record<string, ItemDef> = {
     stack: 1,
     dmg: 14,
     rate: 0.5,
-    range: 32,
+    range: 16,
     tool: "chop",
     chop: 1,
   },
@@ -79,7 +79,7 @@ export const ITEMS: Record<string, ItemDef> = {
     stack: 1,
     dmg: 16,
     rate: 0.62,
-    range: 36,
+    range: 18,
     tool: "chop",
     chop: 2,
   },
@@ -291,6 +291,18 @@ export function craft(inv: Slot[], r: Recipe): boolean {
   if (!canCraft(inv, r)) return false;
   for (const [id, n] of Object.entries(r.needs)) takeItem(inv, id, n);
   return addItem(inv, r.out, r.count);
+}
+
+export function moveSlot(from: Slot[], to: Slot[], index: number, cap: number): boolean {
+  const s = from[index];
+  if (!s) return false;
+  const before = countItem(to, s.id);
+  addItem(to, s.id, s.n, cap);
+  const added = countItem(to, s.id) - before;
+  if (added <= 0) return false;
+  s.n -= added;
+  if (s.n <= 0) from.splice(index, 1);
+  return true;
 }
 
 const GUNS = ["pistol9", "pistol45", "pump12", "sawn20", "ar15", "bolt762", "bow"] as const;

@@ -1,8 +1,9 @@
 import type { Assets } from "./assets";
-import { MAP_H, MAP_W, T, TILE, VIEW_TILES_X, geoToWorld } from "./constants";
+import { MAP_H, MAP_W, T, TILE, VIEW_TILES_X, VISION, VISION_IN, geoToWorld } from "./constants";
 import { ITEMS } from "./items";
 import type { GameState } from "./sim";
 import type { Building, Car, Critter } from "./world";
+import { hasLos } from "./world";
 import { ROADS } from "./geo-data";
 
 const TILE_IMG: Record<number, string> = {
@@ -54,13 +55,16 @@ export function drawFrame(
   ctx.scale(cam.scale, cam.scale);
   ctx.translate(-cam.x, -cam.y);
 
-  drawTiles(ctx, s, assets, cam, vw, vh);
+  const vis = visFor(s, cam, vw, vh);
+  drawTiles(ctx, s, assets, cam, vw, vh, vis);
+  const canSee = (x: number, y: number) => vis.see(x, y);
   const sprites: { y: number; draw: () => void }[] = [];
 
   if (!s.interior) {
     for (const t of s.world.trees) {
       if (t.chopped) continue;
       if (!inView(t.x, t.y, cam, vw, vh, 80)) continue;
+      if (!canSee(t.x, t.y)) continue;
       sprites.push({
         y: t.y,
         draw: () => {
@@ -74,6 +78,7 @@ export function drawFrame(
     }
     for (const p of s.world.props) {
       if (!inView(p.x, p.y, cam, vw, vh, 60)) continue;
+      if (!canSee(p.x, p.y)) continue;
       sprites.push({
         y: p.y,
         draw: () => {
@@ -92,6 +97,7 @@ export function drawFrame(
     }
     for (const car of s.world.cars) {
       if (!inView(car.x, car.y, cam, vw, vh, 50)) continue;
+      if (!canSee(car.x, car.y) && s.carId !== car.id) continue;
       sprites.push({
         y: car.y + 8,
         draw: () => drawCar(ctx, car, s.carId === car.id),
@@ -100,6 +106,7 @@ export function drawFrame(
     for (const z of s.world.zombies) {
       if (!z.alive || z.inside) continue;
       if (!inView(z.x, z.y, cam, vw, vh, 50)) continue;
+      if (!canSee(z.x, z.y)) continue;
       sprites.push({
         y: z.y,
         draw: () => {
@@ -122,6 +129,7 @@ export function drawFrame(
     for (const c of s.world.critters) {
       if (!c.alive) continue;
       if (!inView(c.x, c.y, cam, vw, vh, 60)) continue;
+      if (!canSee(c.x, c.y)) continue;
       sprites.push({
         y: c.y,
         draw: () => drawCritter(ctx, assets, c),
@@ -129,6 +137,7 @@ export function drawFrame(
     }
   } else {
     for (const f of s.interior.furniture) {
+      if (!canSee(f.x, f.y) && f.kind !== "door") continue;
       sprites.push({
         y: f.y,
         draw: () => drawFurn(ctx, { ...f, searched: s.searched.has(f.id) }),
@@ -137,6 +146,7 @@ export function drawFrame(
     const bid = s.interior.buildingId;
     for (const z of s.world.zombies) {
       if (!z.alive || z.inside !== bid) continue;
+      if (!canSee(z.x, z.y)) continue;
       sprites.push({
         y: z.y,
         draw: () => {
@@ -145,6 +155,22 @@ export function drawFrame(
         },
       });
     }
+  }
+
+  const insideId = s.interior?.buildingId ?? null;
+  for (const d of s.drops) {
+    if ((d.inside ?? null) !== insideId) continue;
+    if (!inView(d.x, d.y, cam, vw, vh, 30)) continue;
+    if (!canSee(d.x, d.y)) continue;
+    sprites.push({
+      y: d.y,
+      draw: () => {
+        ctx.fillStyle = "#6b5344";
+        ctx.fillRect(d.x - 6, d.y - 8, 12, 10);
+        ctx.fillStyle = "#c9a227";
+        ctx.fillRect(d.x - 2, d.y - 5, 4, 4);
+      },
+    });
   }
 
   if (s.carId == null) {
@@ -168,7 +194,8 @@ export function drawFrame(
           frame,
           s.player.invuln > 0 && Math.floor(s.time * 20) % 2 === 0,
           attacking,
-          28,
+          32,
+          46,
         );
       },
     });
@@ -179,6 +206,7 @@ export function drawFrame(
 
   for (const b of s.bullets) {
     if (!b.alive) continue;
+    if (!canSee(b.x, b.y)) continue;
     ctx.fillStyle = b.tint || "#e6e1d0";
     if (b.paint) {
       ctx.beginPath();
@@ -213,6 +241,7 @@ function drawTiles(
   cam: Cam,
   vw: number,
   vh: number,
+  vis: { see: (x: number, y: number) => boolean },
 ) {
   const tiles = s.interior ? s.interior.tiles : s.world.tiles;
   const tw = s.interior ? s.interior.w : MAP_W;
@@ -257,6 +286,10 @@ function drawTiles(
       if (t === T.PARKING) {
         ctx.fillStyle = "rgba(0,0,0,0.22)";
         ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
+      }
+      if (!vis.see(x * TILE + 16, y * TILE + 16)) {
+        ctx.fillStyle = "rgba(6, 7, 5, 0.72)";
+        ctx.fillRect(x * TILE, y * TILE, TILE + 0.5, TILE + 0.5);
       }
     }
   }
@@ -307,6 +340,7 @@ function drawActor(
   flash: boolean,
   attackSheet = false,
   size = 28,
+  height = size,
 ) {
   const cols = attackSheet ? 2 : 4;
   const rows = attackSheet ? 2 : 4;
@@ -317,7 +351,7 @@ function drawActor(
   const row = attackSheet ? Math.floor(f / 2) : facing;
   ctx.save();
   if (flash) ctx.filter = "brightness(2.4)";
-  ctx.drawImage(sheet, col * cw, row * ch, cw, ch, x - size / 2, y - size + 4, size, size);
+  ctx.drawImage(sheet, col * cw, row * ch, cw, ch, x - size / 2, y - height + 6, size, height);
   ctx.restore();
 }
 
@@ -570,6 +604,30 @@ function inferLook(kind: string, label: string) {
   if (l.includes("gurney")) return "gurney";
   if (l.includes("bed") || l.includes("dorm")) return "bed";
   return kind;
+}
+
+function visFor(s: GameState, _cam: Cam, _vw: number, _vh: number) {
+  const interior = s.interior;
+  const opaque = interior ? interior.blocked : s.world.opaque;
+  const bw = interior ? interior.w : MAP_W;
+  const bh = interior ? interior.h : MAP_H;
+  const range = interior ? VISION_IN : VISION;
+  const ox = s.player.x;
+  const oy = s.player.y - 8;
+  const cache = new Map<number, boolean>();
+  return {
+    see(x: number, y: number) {
+      if (Math.hypot(x - ox, y - oy) > range) return false;
+      const tx = Math.floor(x / TILE);
+      const ty = Math.floor(y / TILE);
+      const k = ty * 1024 + tx;
+      const hit = cache.get(k);
+      if (hit !== undefined) return hit;
+      const ok = hasLos(opaque, bw, bh, ox, oy, x, y);
+      cache.set(k, ok);
+      return ok;
+    },
+  };
 }
 
 function inView(x: number, y: number, cam: Cam, vw: number, vh: number, pad: number) {

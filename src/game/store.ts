@@ -24,6 +24,9 @@ export type HudState = {
   inCar: boolean;
   gas: number;
   gasMax: number;
+  containerId: string | null;
+  containerName: string;
+  containerSlots: Slot[];
   set: (p: Partial<HudState>) => void;
 };
 
@@ -48,5 +51,8 @@ export const useHud = create<HudState>((set) => ({
   inCar: false,
   gas: 0,
   gasMax: 120,
+  containerId: null,
+  containerName: "",
+  containerSlots: [],
   set: (p) => set(p),
 }));

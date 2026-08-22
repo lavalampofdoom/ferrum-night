@@ -29,6 +29,10 @@ export const CAR_SPEED = 208;
 export const CAR_RADIUS = 16;
 export const CAR_GAS = 120;
 export const DOOR_HP = 100;
+export const VISION = 340;
+export const VISION_IN = 220;
+export const CONTAINER_CAP = 12;
+export const BUILDING_INSET = 10;
 
 export const INFECTION_TIME = 180;
 

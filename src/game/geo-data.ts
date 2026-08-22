@@ -507,7 +507,6 @@ export const LANDMARKS: GeoPlace[] = [
   { id: "ferrum-fire", kind: "gas", name: "Ferrum Volunteer Fire", address: "Franklin St, Ferrum", lat: 36.92176, lng: -80.00959, tw: 5, th: 4, claimable: false, loot: "civic", zone: "ferrum" },
   { id: "ferrum-post", kind: "house", name: "Ferrum Post Office", address: "57 Fieldcrest Rd", lat: 36.92035, lng: -80.0121, tw: 4, th: 3, claimable: true, loot: "civic", zone: "ferrum" },
   { id: "ferrum-elem", kind: "college", name: "Ferrum Elementary School", address: "Ferrum, VA", lat: 36.92292, lng: -80.02664, tw: 7, th: 5, claimable: false, loot: "college", zone: "ferrum" },
-  { id: "fairy-1576", kind: "house", name: "Farmhouse", address: "1576 Fairy Stone Park Rd", lat: 36.9054, lng: -80.0902, tw: 4, th: 4, claimable: true, loot: "house", zone: "rural" },
   { id: "new-haven", kind: "church", name: "New Haven Church", address: "west of Ferrum", lat: 36.91514, lng: -80.04476, tw: 4, th: 5, claimable: false, loot: "church", zone: "rural" },
   { id: "lowes", kind: "lowes", name: "Lowe's Home Improvement", address: "800 Old Franklin Tpke", lat: 37.01499, lng: -79.86068, tw: 10, th: 6, claimable: false, loot: "lowes", zone: "town" },
   { id: "walmart", kind: "lowes", name: "Walmart Supercenter", address: "550 Old Franklin Tpke", lat: 37.01361, lng: -79.8634, tw: 10, th: 6, claimable: false, loot: "store", zone: "town" },
