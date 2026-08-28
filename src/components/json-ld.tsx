@@ -11,7 +11,7 @@ export function JsonLd({ data }: { data: unknown }) {
 
 export const SITE_NAME = "Ferrum Night";
 export const SITE_TAGLINE =
-  "Free top-down zombie survival in the browser. Start at 180 Ferrum Mountain Road in Ferrum, Virginia, and walk VA-40 to Rocky Mount.";
+  "Free top-down zombie survival in the browser. Start at 180 Ferrum Mountain Road and walk a geographically exact replica of Ferrum, Virginia.";
 
 export function videoGameLd(origin: string) {
   return {
