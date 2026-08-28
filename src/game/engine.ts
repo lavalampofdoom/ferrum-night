@@ -6,11 +6,14 @@ import { craft, RECIPES } from "./items";
 import { cameraFor, drawFrame, drawMinimap } from "./render";
 import { clearSave, loadSave, writeSave } from "./save";
 import {
+  acceptTurn as acceptTurnState,
   applySave,
   closeContainer,
   createState,
   currentCar,
   dropItem,
+  giveItemToHuman,
+  refuseTurn as refuseTurnState,
   snapshotSave,
   stepParticles,
   stepSim,
@@ -142,6 +145,32 @@ export class Engine {
     this.syncHud();
   }
 
+  giveInv(i: number) {
+    if (!this.state) return;
+    giveItemToHuman(this.state, i);
+    this.syncHud();
+  }
+
+  acceptTurn() {
+    if (!this.state) return;
+    acceptTurnState(this.state);
+    useHud.getState().set({ screen: "play" });
+    this.syncHud();
+    if (!this.running) {
+      this.running = true;
+      this.paused = false;
+      this.last = performance.now();
+      requestAnimationFrame(this.frame);
+    }
+  }
+
+  refuseTurn() {
+    if (!this.state) return;
+    refuseTurnState(this.state);
+    useHud.getState().set({ screen: "turned" });
+    this.syncHud();
+  }
+
   takeContainer(i: number) {
     if (!this.state) return;
     takeFromChest(this.state, i);
@@ -227,8 +256,9 @@ export class Engine {
         stepParticles(this.state, FIXED_DT);
         if (this.state.player.hp < prevHp) this.audio.hurt();
         if (this.state.player.attackT > 0.4) this.audio.swing();
-        if (this.state.dead) useHud.getState().set({ screen: "dead" });
-        if (this.state.turned) useHud.getState().set({ screen: "turned" });
+        if (this.state.offerTurn) useHud.getState().set({ screen: "turn-choice" });
+        else if (this.state.dead) useHud.getState().set({ screen: "dead" });
+        else if (this.state.turned) useHud.getState().set({ screen: "turned" });
         if (this.state.openChest) this.syncHud();
       }
       this.acc -= FIXED_DT;
@@ -300,6 +330,15 @@ export class Engine {
       inCar: this.state.carId != null,
       gas: car?.gas ?? 0,
       gasMax: CAR_GAS,
+      form: p.form,
+      zedLevel: p.zedLevel,
+      offerTurn: this.state.offerTurn,
+      hpShow: this.state.hpShow > 0,
+      gasShow: this.state.gasShow > 0 && this.state.carId != null,
+      carShow: this.state.carShow > 0 && this.state.carId != null,
+      infShow: this.state.infShow > 0 && p.infection > 0,
+      carHp: car?.hp ?? 100,
+      followName: this.state.world.humans.find((h) => h.alive && h.follow)?.name ?? "",
       containerId: this.state.openChest,
       containerName: this.state.chestLabel,
       containerSlots: this.state.openChest
