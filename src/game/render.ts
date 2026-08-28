@@ -2,7 +2,7 @@ import type { Assets } from "./assets";
 import { MAP_H, MAP_W, T, TILE, VIEW_TILES_X, VISION, VISION_IN, geoToWorld } from "./constants";
 import { ITEMS } from "./items";
 import type { GameState } from "./sim";
-import type { Building, Car, Critter } from "./world";
+import type { Building, Car, Critter, Human } from "./world";
 import { hasLos } from "./world";
 import { ROADS } from "./geo-data";
 
@@ -103,6 +103,15 @@ export function drawFrame(
         draw: () => drawCar(ctx, car, s.carId === car.id),
       });
     }
+    for (const h of s.world.humans) {
+      if (!h.alive || h.inside) continue;
+      if (!inView(h.x, h.y, cam, vw, vh, 50)) continue;
+      if (!canSee(h.x, h.y)) continue;
+      sprites.push({
+        y: h.y,
+        draw: () => drawHuman(ctx, assets, h),
+      });
+    }
     for (const z of s.world.zombies) {
       if (!z.alive || z.inside) continue;
       if (!inView(z.x, z.y, cam, vw, vh, 50)) continue;
@@ -185,18 +194,20 @@ export function drawFrame(
           : s.player.moving
             ? s.player.walk
             : 0;
+        const zed = s.player.form === "zed";
+        const psheet = zed ? (s.player.zedLevel >= 3 ? assets.brute : assets.zombie) : sheet;
         drawActor(
           ctx,
-          sheet,
+          psheet,
           s.player.x,
           s.player.y,
-          face,
+          zed ? s.player.facing : face,
           frame,
           s.player.invuln > 0 && Math.floor(s.time * 20) % 2 === 0,
-          attacking,
-          32,
-          46,
+          attacking && !zed,
+          s.player.zedLevel >= 3 && zed ? 42 : 28,
         );
+        if (!zed && s.player.clothes) drawClothes(ctx, s.player.x, s.player.y, s.player.clothes);
       },
     });
   }
@@ -388,6 +399,34 @@ function drawCritter(ctx: CanvasRenderingContext2D, assets: Assets, c: Critter) 
   drawActor(ctx, sheet, c.x, c.y, c.facing, moving ? c.walk : 0, false, false, size);
 }
 
+
+const CLOTH_TINT: Record<string, string> = {
+  hoodie: "#3d5a80",
+  jacket: "#6b4a2b",
+  flannel: "#8a3b32",
+  jeans: "#2c3a5a",
+  cap: "#2a2a2c",
+  moto: "#1e1e20",
+  riot: "#3a3a28",
+};
+
+function drawClothes(ctx: CanvasRenderingContext2D, x: number, y: number, id: string) {
+  ctx.fillStyle = CLOTH_TINT[id] ?? "#4a5560";
+  ctx.globalAlpha = 0.55;
+  ctx.fillRect(x - 6, y - 8, 12, 10);
+  ctx.globalAlpha = 1;
+}
+
+function drawHuman(ctx: CanvasRenderingContext2D, assets: Assets, h: Human) {
+  const sheet = h.role === "minion" ? assets.zombie : assets.player;
+  drawActor(ctx, sheet, h.x, h.y, h.facing, h.walk, false, false, 28);
+  if (h.clothes) drawClothes(ctx, h.x, h.y, h.clothes);
+  ctx.fillStyle = h.follow ? "#c9a227" : h.role === "minion" ? "#7a3b34" : "#c9c3b0";
+  ctx.font = "8px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(h.name, h.x, h.y - 18);
+}
+
 function drawCar(ctx: CanvasRenderingContext2D, car: Car, occupied: boolean) {
   const palettes = [
     ["#6b2a24", "#4a1c18", "#c9c3b0"],
@@ -400,6 +439,7 @@ function drawCar(ctx: CanvasRenderingContext2D, car: Car, occupied: boolean) {
   ctx.save();
   ctx.translate(car.x, car.y);
   ctx.rotate(-car.ang);
+  if (car.wrecked) ctx.globalAlpha = 0.55;
   ctx.fillStyle = "#1a1a1c";
   ctx.fillRect(-7, -16, 5, 8);
   ctx.fillRect(2, -16, 5, 8);

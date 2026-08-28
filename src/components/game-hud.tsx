@@ -21,6 +21,9 @@ type Props = {
   onDrop: (i: number) => void;
   onTake: (i: number) => void;
   onCloseLoot: () => void;
+  onGive?: (i: number) => void;
+  onAcceptTurn?: () => void;
+  onRefuseTurn?: () => void;
   onStick: (x: number, y: number) => void;
   onAttack: (v: boolean) => void;
   onAct: (v: boolean) => void;
@@ -37,6 +40,9 @@ export function GameHud({
   onDrop,
   onTake,
   onCloseLoot,
+  onGive,
+  onAcceptTurn,
+  onRefuseTurn,
   onStick,
   onAttack,
   onAct,
@@ -56,17 +62,17 @@ export function GameHud({
         <div className="flex items-start justify-between gap-3">
           <div className="pointer-events-auto min-w-0 max-w-[70%] rounded-xl bg-bg/80 px-3 py-2 ring-1 ring-border">
             <p className="font-display text-xs tracking-wide text-muted">{hud.location}</p>
-            <Bar label="Health" value={hud.hp / hud.maxHp} color="bg-health" />
-            {hud.infection > 0 ? (
-              <Bar label="Infection" value={hud.infection / 180} color="bg-infect" />
-            ) : null}
-            {hud.inCar ? <Bar label="Gas" value={hud.gas / Math.max(1, hud.gasMax)} color="bg-accent" /> : null}
+            {hud.hpShow ? <Bar label="Health" value={hud.hp / hud.maxHp} color="bg-health" /> : null}
+            {hud.infShow ? <Bar label="Infection" value={hud.infection / 180} color="bg-infect" /> : null}
+            {hud.gasShow ? <Bar label="Gas" value={hud.gas / Math.max(1, hud.gasMax)} color="bg-accent" /> : null}
+            {hud.carShow ? <Bar label="Chassis" value={hud.carHp / 100} color="bg-accent" /> : null}
             <p className="mt-1 font-mono text-[11px] text-faint">
-              {ITEMS[hud.weapon]?.name ?? "Hands"}
-              {ITEMS[hud.weapon]?.ammo
+              {hud.form === "zed" ? `Zed L${hud.zedLevel}` : ITEMS[hud.weapon]?.name ?? "Hands"}
+              {hud.form !== "zed" && ITEMS[hud.weapon]?.ammo
                 ? ` · ${countItem(hud.inv, ITEMS[hud.weapon]!.ammo!)} ${ITEMS[ITEMS[hud.weapon]!.ammo!]?.name ?? "ammo"}`
                 : ""}
               {hud.armor ? ` · ${ITEMS[hud.armor]?.name}` : ""}
+              {hud.followName ? ` · ${hud.followName}` : ""}
             </p>
           </div>
           <div className="pointer-events-auto">
@@ -101,9 +107,12 @@ export function GameHud({
       {hud.containerId ? (
         <LootPanel onTake={onTake} onStore={onUse} onDrop={onDrop} onClose={onCloseLoot} />
       ) : hud.invOpen ? (
-        <Inventory onUse={onUse} onCraft={onCraft} onDrop={onDrop} />
+        <Inventory onUse={onUse} onCraft={onCraft} onDrop={onDrop} onGive={onGive} />
       ) : null}
       {hud.screen === "pause" ? <PauseMenu onResume={onPause} onNew={onNew} /> : null}
+      {hud.screen === "turn-choice" ? (
+        <TurnChoice onAccept={() => onAcceptTurn?.()} onRefuse={() => onRefuseTurn?.()} />
+      ) : null}
       {hud.screen === "dead" || hud.screen === "turned" ? (
         <EndCard turned={hud.screen === "turned"} onNew={onNew} />
       ) : null}
@@ -187,10 +196,12 @@ function Inventory({
   onUse,
   onCraft,
   onDrop,
+  onGive,
 }: {
   onUse: (i: number) => void;
   onCraft: (id: string) => void;
   onDrop: (i: number) => void;
+  onGive?: (i: number) => void;
 }) {
   const hud = useHud();
   const close = () => useHud.getState().set({ invOpen: false, craftOpen: false });
@@ -227,6 +238,15 @@ function Inventory({
                     className="pb-1 font-mono text-[9px] text-faint hover:text-fg"
                   >
                     Drop
+                  </button>
+                ) : null}
+                {s && onGive ? (
+                  <button
+                    type="button"
+                    onClick={() => onGive(i)}
+                    className="pb-1 font-mono text-[9px] text-faint hover:text-fg"
+                  >
+                    Give
                   </button>
                 ) : null}
               </div>
@@ -378,6 +398,27 @@ function PauseMenu({ onResume, onNew }: { onResume: () => void; onNew: () => voi
               Account
             </Link>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TurnChoice({ onAccept, onRefuse }: { onAccept: () => void; onRefuse: () => void }) {
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-bg/80 p-4">
+      <div className="max-w-sm rounded-2xl bg-surface p-5 text-center ring-1 ring-border">
+        <h2 className="font-display text-xl">The fever peaks</h2>
+        <p className="mt-2 text-sm text-muted">
+          Rise as a walker and hunt the living, or let the night take you.
+        </p>
+        <div className="mt-4 flex flex-col gap-2">
+          <button type="button" onClick={onAccept} className="rounded-lg bg-infect px-3 py-2 text-sm text-fg">
+            Continue as a zombie
+          </button>
+          <button type="button" onClick={onRefuse} className="rounded-lg bg-raised px-3 py-2 text-sm text-muted">
+            Rest
+          </button>
         </div>
       </div>
     </div>

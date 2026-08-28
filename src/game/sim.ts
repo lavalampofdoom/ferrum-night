@@ -31,6 +31,7 @@ import {
   type Building,
   type Car,
   type Critter,
+  type Human,
   type Interact,
   type Interior,
   type World,
@@ -86,6 +87,10 @@ export type Player = {
   searchTarget: string | null;
   walk: number;
   moving: boolean;
+  form: "human" | "zed";
+  zedLevel: 1 | 2 | 3 | 4;
+  zedKills: number;
+  clothes: string;
 };
 
 export type GameState = {
@@ -102,8 +107,15 @@ export type GameState = {
   shake: number;
   hitstop: number;
   turned: boolean;
+  offerTurn: boolean;
   dead: boolean;
   time: number;
+  hpShow: number;
+  gasShow: number;
+  carShow: number;
+  infShow: number;
+  ramCd: number;
+  entered: Set<string>;
   rng: () => number;
   hint: string;
   toast: string;
@@ -144,6 +156,10 @@ export function createState(world: World, rng = mulberry32(40)): GameState {
       searchTarget: null,
       walk: 0,
       moving: false,
+      form: "human",
+      zedLevel: 1,
+      zedKills: 0,
+      clothes: "",
     },
     interior: null,
     returnX: world.startX,
@@ -156,8 +172,15 @@ export function createState(world: World, rng = mulberry32(40)): GameState {
     shake: 0,
     hitstop: 0,
     turned: false,
+    offerTurn: false,
     dead: false,
     time: 0,
+    hpShow: 0,
+    gasShow: 0,
+    carShow: 0,
+    infShow: 0,
+    ramCd: 0,
+    entered: new Set(),
     rng,
     hint: "Search the clinic. Claim a house. Stay quiet.",
     toast: "",
@@ -178,13 +201,19 @@ export function currentCar(s: GameState): Car | null {
 }
 
 export function stepSim(s: GameState, a: Actions, dt: number) {
-  if (s.dead || s.turned) return;
+  if (s.dead) return;
+  if (s.offerTurn) return;
   if (s.hitstop > 0) {
     s.hitstop -= dt;
     return;
   }
   s.time += dt;
   s.shake = Math.max(0, s.shake - dt * 8);
+  s.hpShow = Math.max(0, s.hpShow - dt);
+  s.gasShow = Math.max(0, s.gasShow - dt);
+  s.carShow = Math.max(0, s.carShow - dt);
+  s.infShow = Math.max(0, s.infShow - dt);
+  s.ramCd = Math.max(0, s.ramCd - dt);
   if (s.toastT > 0) s.toastT -= dt;
   else s.toast = "";
 
@@ -192,12 +221,13 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
   p.attackT = Math.max(0, p.attackT - dt);
   p.invuln = Math.max(0, p.invuln - dt);
 
-  if (p.infection > 0) {
+  if (p.form === "human" && p.infection > 0) {
     p.infection -= dt;
+    s.infShow = 1.6;
     if (p.infection <= 0) {
-      s.turned = true;
       p.infection = 0;
-      toast(s, "The fever takes you.");
+      s.offerTurn = true;
+      toast(s, "The fever peaks. Turn, or rest.");
       return;
     }
   }
@@ -213,7 +243,13 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
     driveCar(s, a, dt);
   } else {
     const ground = tileSpeed(tileAt(tiles, p.x, p.y, bw));
-    const spd = (a.sprint ? PLAYER_SPRINT : PLAYER_SPEED) * ground;
+    let base = a.sprint ? PLAYER_SPRINT : PLAYER_SPEED;
+    if (p.form === "zed") {
+      if (p.zedLevel === 1) base = ZOMBIE_SPEED + 6;
+      else if (p.zedLevel === 2) base = PLAYER_SPEED;
+      else base = PLAYER_SPEED * 0.85;
+    }
+    const spd = base * ground;
     const mx = a.moveX * spd * dt;
     const my = a.moveY * spd * dt;
     const ox = p.x;
@@ -225,8 +261,8 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
     tryMove(p, blocked, bw, mx, my, mapW, mapH, s.interior ? undefined : s.world, PLAYER_RADIUS, s.carId);
     const dist = Math.hypot(p.x - ox, p.y - oy);
     p.moving = dist > 0.2;
-    if (p.moving) p.walk += dist * 0.14;
-    if (a.aimOn) {
+    if (p.moving) p.walk += dt * 5.2;
+    if (p.form === "human" && a.aimOn) {
       const adx = a.aimX - p.x;
       const ady = a.aimY - p.y;
       if (Math.hypot(adx, ady) > 10) {
@@ -256,13 +292,19 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
         p.y = nearCar.y;
         toast(s, "Engine turns.");
       }
-    } else if (nearB) {
+    } else {
+      const nearH = nearestHuman(s, 32);
+      if (nearH && !nearH.follow && p.form === "human") {
+        s.hint = `Ask ${nearH.name} to follow`;
+        if (a.justUse) recruitHuman(s, nearH);
+      } else if (nearB) {
       if (nearB.locked && !nearB.doorBroken) {
         s.hint = "Door locked — bash it";
         if (a.justAttack && p.attackT <= 0) bashDoor(s, nearB);
       } else {
         s.hint = nearB.doorBroken ? `Enter ${nearB.name} (door gone)` : `Enter ${nearB.name}`;
         if (a.justUse) enterBuilding(s, nearB);
+      }
       }
     }
 
@@ -327,8 +369,11 @@ export function stepSim(s: GameState, a: Actions, dt: number) {
   stepBullets(s, dt);
   stepWildlife(s, dt);
   stepZombies(s, dt);
+  stepHumans(s, dt);
+  stepRespawn(s, dt);
+  if (p.form === "zed") stepMinions(s, dt);
 
-  if (p.hp <= 0) {
+  if (p.form === "human" && p.hp <= 0) {
     s.dead = true;
     toast(s, "You went down.");
   }
@@ -410,6 +455,7 @@ function nearestCar(s: GameState, r: number): Car | null {
   let best: Car | null = null;
   let d = r;
   for (const c of s.world.cars) {
+    if (c.wrecked || c.npc) continue;
     const dist = Math.hypot(c.x - s.player.x, c.y - s.player.y);
     if (dist < d) {
       d = dist;
@@ -422,10 +468,11 @@ function nearestCar(s: GameState, r: number): Car | null {
 function driveCar(s: GameState, a: Actions, dt: number) {
   const car = currentCar(s);
   const p = s.player;
-  if (!car) {
+  if (!car || car.wrecked) {
     s.carId = null;
     return;
   }
+  s.gasShow = 1.2;
   car.ang -= a.moveX * 2.6 * dt;
   const thrust = -a.moveY;
   const empty = car.gas <= 0;
@@ -453,7 +500,8 @@ function driveCar(s: GameState, a: Actions, dt: number) {
 }
 
 function ramZombies(s: GameState, car: Car, speed: number) {
-  if (speed < 70) return;
+  if (speed < 70 || car.wrecked || s.ramCd > 0) return;
+  let hit = false;
   for (const z of s.world.zombies) {
     if (!z.alive || z.inside) continue;
     if (Math.hypot(z.x - car.x, z.y - car.y) < CAR_RADIUS + zombieRadius(z) + 6) {
@@ -461,6 +509,18 @@ function ramZombies(s: GameState, car: Car, speed: number) {
       z.x += Math.sin(car.ang) * 18;
       z.y += Math.cos(car.ang) * 18;
       s.shake = 0.18;
+      hit = true;
+    }
+  }
+  if (hit) {
+    car.hp = Math.max(0, car.hp - 10);
+    s.ramCd = 0.35;
+    s.carShow = 2.2;
+    if (car.hp <= 0) {
+      car.wrecked = true;
+      car.npc = false;
+      s.carId = null;
+      toast(s, "Chassis folded. Car wrecked.");
     }
   }
 }
@@ -519,6 +579,7 @@ function enterBuilding(s: GameState, b: Building) {
   attachBenches(s, s.interior);
   s.player.x = s.interior.spawnX;
   s.player.y = s.interior.spawnY;
+  s.entered.add(b.id);
   toast(s, b.name);
 }
 
@@ -956,8 +1017,9 @@ function stepZombiesOn(
     z.hitT = Math.max(0, z.hitT - dt);
     z.attackCd = Math.max(0, z.attackCd - dt);
     if (z.paintT > 0) z.paintT = Math.max(0, z.paintT - dt);
-    const dx = tx - z.x;
-    const dy = ty - z.y;
+    const prey = pickPrey(s, z, indoor);
+    const dx = prey.x - z.x;
+    const dy = prey.y - z.y;
     const d = Math.hypot(dx, dy);
     if (!indoor && d > 1400) continue;
     nearby++;
@@ -979,7 +1041,8 @@ function stepZombiesOn(
       vx = 0;
       vy = 0;
       if (z.attackCd <= 0 && !invulnCar) {
-        bite(s, z);
+        if (prey.kind === "player") bite(s, z);
+        else if (prey.kind === "human" && prey.human) biteHuman(s, z, prey.human);
         z.attackCd = z.brute ? 2.0 : 1.7;
       }
     } else if (seeking) {
@@ -1061,6 +1124,7 @@ function inTown(x: number, y: number): boolean {
 
 function bite(s: GameState, z: Zombie) {
   const p = s.player;
+  if (p.form === "zed") return;
   if (p.invuln > 0) return;
   if (s.carId != null && !s.interior) return;
   const armor = p.armor ? ITEMS[p.armor] : null;
@@ -1069,6 +1133,7 @@ function bite(s: GameState, z: Zombie) {
   const raw = z.brute ? 50 : 14.3;
   const dmg = raw * (1 - def);
   p.hp -= dmg;
+  s.hpShow = 2.4;
   p.invuln = z.brute ? 0.55 : 0.45;
   s.shake = z.brute ? 0.34 : 0.22;
   burst(s, p.x, p.y, "#a33b34", z.brute ? 12 : 8);
@@ -1254,8 +1319,9 @@ export function useItem(s: GameState, slotIndex: number) {
     toast(s, `Equipped ${def.name}`);
     return;
   }
-  if (def.kind === "armor") {
+  if (def.kind === "armor" || def.kind === "clothes") {
     s.player.armor = def.id;
+    s.player.clothes = def.id;
     toast(s, `Wearing ${def.name}`);
     return;
   }
@@ -1307,6 +1373,331 @@ export function stepParticles(s: GameState, dt: number) {
   s.particles = s.particles.filter((p) => p.life > 0);
 }
 
+
+function pickPrey(
+  s: GameState,
+  z: Zombie,
+  indoor: boolean,
+): { x: number; y: number; kind: "player" | "human" | "none"; human?: Human } {
+  const p = s.player;
+  let bestD = Infinity;
+  let best: { x: number; y: number; kind: "player" | "human" | "none"; human?: Human } = {
+    x: p.x,
+    y: p.y,
+    kind: p.form === "zed" ? "none" : "player",
+  };
+  if (p.form !== "zed") {
+    const sameRoom = indoor ? (s.interior?.buildingId ?? null) === (z.inside ?? null) : !z.inside;
+    if (sameRoom) {
+      bestD = Math.hypot(p.x - z.x, p.y - z.y);
+      best = { x: p.x, y: p.y, kind: "player" };
+    }
+  }
+  for (const h of s.world.humans) {
+    if (!h.alive || h.role === "minion") continue;
+    if (indoor && h.inside !== (s.interior?.buildingId ?? null)) continue;
+    if (!indoor && h.inside) continue;
+    const d = Math.hypot(h.x - z.x, h.y - z.y);
+    if (d < bestD) {
+      bestD = d;
+      best = { x: h.x, y: h.y, kind: "human", human: h };
+    }
+  }
+  return best;
+}
+
+function biteHuman(s: GameState, z: Zombie, h: Human) {
+  h.hp -= z.brute ? 28 : 16;
+  if (h.hp <= 0) {
+    h.alive = false;
+    turnHumanToZed(s, h);
+    toast(s, `${h.name} turned.`);
+  }
+}
+
+function turnHumanToZed(s: GameState, h: Human) {
+  const id = s.world.zombies.reduce((m, z) => Math.max(m, z.id), 0) + 1;
+  s.world.zombies.push({
+    id,
+    x: h.x,
+    y: h.y,
+    hp: 40,
+    maxHp: 40,
+    facing: h.facing,
+    vx: 0,
+    vy: 0,
+    walk: 0,
+    attackCd: 0.4,
+    wanderT: 1,
+    wx: h.x,
+    wy: h.y,
+    hitT: 0,
+    alive: true,
+    brute: false,
+    paintT: 0,
+    inside: h.inside,
+    enterT: 0,
+  });
+}
+
+function nearestHuman(s: GameState, r: number): Human | null {
+  let best: Human | null = null;
+  let d = r;
+  for (const h of s.world.humans) {
+    if (!h.alive) continue;
+    if ((h.inside ?? null) !== (s.interior?.buildingId ?? null)) continue;
+    const dist = Math.hypot(h.x - s.player.x, h.y - s.player.y);
+    if (dist < d) {
+      d = dist;
+      best = h;
+    }
+  }
+  return best;
+}
+
+export function recruitHuman(s: GameState, h: Human) {
+  if (s.player.form !== "human") return;
+  h.role = "follow";
+  h.follow = true;
+  h.hideId = null;
+  if (h.carId != null) {
+    const car = s.world.cars.find((c) => c.id === h.carId);
+    if (car) car.npc = false;
+    h.carId = null;
+  }
+  toast(s, `${h.name} follows you.`);
+}
+
+export function giveItemToHuman(s: GameState, invIndex: number) {
+  const h = nearestHuman(s, 36);
+  if (!h || !h.follow) {
+    toast(s, "No follower close enough.");
+    return;
+  }
+  const slot = s.player.inv[invIndex];
+  if (!slot) return;
+  const def = ITEMS[slot.id];
+  if (!def) return;
+  if (def.kind === "weapon" || def.kind === "ranged" || def.kind === "tool") {
+    h.weapon = slot.id;
+  } else if (def.kind === "armor" || def.kind === "clothes") {
+    h.armor = slot.id;
+    h.clothes = slot.id;
+  } else if (def.heal) {
+    h.hp = Math.min(100, h.hp + (def.heal ?? 0));
+  }
+  slot.n -= 1;
+  if (slot.n <= 0) s.player.inv.splice(invIndex, 1);
+  toast(s, `Gave ${def.name} to ${h.name}.`);
+}
+
+export function acceptTurn(s: GameState) {
+  s.offerTurn = false;
+  s.turned = false;
+  s.player.form = "zed";
+  s.player.zedLevel = 1;
+  s.player.zedKills = 0;
+  s.player.infection = 0;
+  s.player.hp = s.player.maxHp;
+  toast(s, "You rise. Hunt the living.");
+}
+
+export function refuseTurn(s: GameState) {
+  s.offerTurn = false;
+  s.turned = true;
+  s.dead = true;
+  toast(s, "You let go.");
+}
+
+function stepRespawn(s: GameState, dt: number) {
+  if (s.time % 18 > dt) return;
+  const alive = s.world.zombies.filter((z) => z.alive).length;
+  if (alive > 140) return;
+  const id = s.world.zombies.reduce((m, z) => Math.max(m, z.id), 0) + 1;
+  const roll = s.rng();
+  let x = s.player.x + (s.rng() - 0.5) * 600;
+  let y = s.player.y + (s.rng() - 0.5) * 600;
+  if (roll < 0.35) {
+    const car = s.world.cars[Math.floor(s.rng() * Math.max(1, s.world.cars.length))];
+    if (car) {
+      x = car.x + (s.rng() - 0.5) * 20;
+      y = car.y + (s.rng() - 0.5) * 20;
+    }
+  } else if (roll < 0.7) {
+    const houses = s.world.buildings.filter((b) => !s.entered.has(b.id));
+    const b = houses[Math.floor(s.rng() * Math.max(1, houses.length))];
+    if (b) {
+      x = b.doorX;
+      y = b.doorY + 18;
+    }
+  }
+  s.world.zombies.push({
+    id,
+    x,
+    y,
+    hp: 36,
+    maxHp: 36,
+    facing: 0,
+    vx: 0,
+    vy: 0,
+    walk: 0,
+    attackCd: 0,
+    wanderT: 2,
+    wx: x,
+    wy: y,
+    hitT: 0,
+    alive: true,
+    brute: false,
+    paintT: 0,
+    inside: null,
+    enterT: 0,
+  });
+}
+
+function stepMinions(s: GameState, dt: number) {
+  const p = s.player;
+  if (p.zedLevel < 4) return;
+  for (const h of s.world.humans) {
+    if (!h.alive || h.role !== "minion") continue;
+    const dx = p.x - h.x;
+    const dy = p.y - h.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 28) {
+      const spd = 70 * dt;
+      h.x += (dx / (d || 1)) * spd;
+      h.y += (dy / (d || 1)) * spd;
+      h.walk += dt * 5.2;
+      if (Math.abs(dx) > Math.abs(dy)) h.facing = dx < 0 ? 1 : 2;
+      else h.facing = dy < 0 ? 3 : 0;
+    }
+  }
+}
+
+function driveNpc(s: GameState, h: Human, dt: number) {
+  const car = s.world.cars.find((c) => c.id === h.carId);
+  if (!car || car.wrecked) {
+    h.role = "flee";
+    h.carId = null;
+    return;
+  }
+  car.ang += (s.rng() - 0.5) * 0.8 * dt;
+  const spd = CAR_SPEED * 0.45;
+  car.x += Math.sin(car.ang) * spd * dt;
+  car.y += Math.cos(car.ang) * spd * dt;
+  const mw = MAP_W * TILE;
+  const mh = MAP_H * TILE;
+  if (car.x < 40) car.x += mw - 80;
+  if (car.x > mw - 40) car.x -= mw - 80;
+  if (car.y < 40) car.y += mh - 80;
+  if (car.y > mh - 40) car.y -= mh - 80;
+  h.x = car.x;
+  h.y = car.y;
+}
+
+function stepHumans(s: GameState, dt: number) {
+  const p = s.player;
+  const indoor = !!s.interior;
+  for (const h of s.world.humans) {
+    if (!h.alive) continue;
+    if (indoor && h.inside !== s.interior!.buildingId && h.role !== "follow") continue;
+    if (!indoor && h.inside && h.role !== "follow") continue;
+
+    if (h.role === "drive" && h.carId != null && !indoor) {
+      driveNpc(s, h, dt);
+      continue;
+    }
+
+    let tx = h.x;
+    let ty = h.y;
+    let spd = 70;
+
+    if (h.role === "follow" || h.role === "minion") {
+      tx = p.x;
+      ty = p.y;
+      spd = h.role === "minion" ? 68 : 88;
+    } else if (h.role === "hide") {
+      const b = s.world.buildings.find((x) => x.id === h.hideId);
+      if (b) {
+        tx = b.doorX;
+        ty = b.doorY;
+      }
+    } else {
+      let zx = 0;
+      let zy = 0;
+      let zd = 220;
+      for (const z of s.world.zombies) {
+        if (!z.alive || z.inside) continue;
+        const d = Math.hypot(z.x - h.x, z.y - h.y);
+        if (d < zd) {
+          zd = d;
+          zx = z.x;
+          zy = z.y;
+        }
+      }
+      if (p.form === "zed") {
+        const d = Math.hypot(p.x - h.x, p.y - h.y);
+        if (d < zd) {
+          zd = d;
+          zx = p.x;
+          zy = p.y;
+        }
+      }
+      if (zd < 220) {
+        tx = h.x - (zx - h.x);
+        ty = h.y - (zy - h.y);
+        spd = 96;
+      }
+    }
+
+    const dx = tx - h.x;
+    const dy = ty - h.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 18) {
+      const mx = (dx / d) * spd * dt;
+      const my = (dy / d) * spd * dt;
+      tryMove(h, s.world.blocked, MAP_W, mx, my, MAP_W * TILE, MAP_H * TILE, s.world, PLAYER_RADIUS);
+      h.walk += dt * 5.2;
+      if (Math.abs(mx) > Math.abs(my)) h.facing = mx < 0 ? 1 : 2;
+      else h.facing = my < 0 ? 3 : 0;
+    }
+
+    if (h.role === "follow" && p.form === "human" && !indoor) {
+      for (const z of s.world.zombies) {
+        if (!z.alive || z.inside) continue;
+        if (Math.hypot(z.x - h.x, z.y - h.y) < 22) {
+          hurtZombie(s, z, ITEMS[h.weapon]?.dmg ?? 8);
+        }
+      }
+    }
+
+    if (p.form === "zed" && Math.hypot(h.x - p.x, h.y - p.y) < 20 && h.role !== "minion") {
+      h.hp -= 18 * dt;
+      if (h.hp <= 0) {
+        h.alive = false;
+        p.zedKills += 1;
+        if (p.zedLevel === 1 && p.zedKills >= 3) p.zedLevel = 2;
+        else if (p.zedLevel === 2 && p.zedKills >= 8) p.zedLevel = 3;
+        else if (p.zedLevel === 3 && p.zedKills >= 14) p.zedLevel = 4;
+        if (p.zedLevel >= 4) {
+          h.alive = true;
+          h.hp = 40;
+          h.role = "minion";
+          toast(s, `${h.name} shambles with you.`);
+        } else {
+          turnHumanToZed(s, h);
+        }
+      }
+    }
+  }
+
+  if (p.form === "human") {
+    const near = nearestHuman(s, 32);
+    if (near && !near.follow && near.role !== "minion") {
+      s.hint = s.hint || `E recruit ${near.name}`;
+    }
+  }
+}
+
 export function snapshotSave(s: GameState) {
   return {
     version: SAVE_VERSION,
@@ -1328,8 +1719,16 @@ export function snapshotSave(s: GameState) {
       s.world.buildings.map((b) => [b.id, { locked: b.locked, broken: b.doorBroken, hp: b.doorHp }]),
     ),
     benches: s.placedBenches,
-    cars: s.world.cars.map((c) => ({ id: c.id, x: c.x, y: c.y, ang: c.ang, gas: c.gas })),
+    cars: s.world.cars.map((c) => ({
+      id: c.id, x: c.x, y: c.y, ang: c.ang, gas: c.gas, hp: c.hp, wrecked: c.wrecked, npc: c.npc,
+    })),
     carId: s.carId,
+    form: s.player.form,
+    zedLevel: s.player.zedLevel,
+    zedKills: s.player.zedKills,
+    clothes: s.player.clothes,
+    entered: [...s.entered],
+    humans: s.world.humans,
     drops: s.drops,
     zeds: s.world.zombies.map((z) => ({
       id: z.id,
@@ -1360,8 +1759,14 @@ export function applySave(
     deadC?: number[];
     doors?: Record<string, { locked: boolean; broken: boolean; hp: number }>;
     benches?: Record<string, { x: number; y: number }[]>;
-    cars?: { id: number; x: number; y: number; ang: number; gas: number }[];
+    cars?: { id: number; x: number; y: number; ang: number; gas: number; hp?: number; wrecked?: boolean; npc?: boolean }[];
     carId?: number | null;
+    form?: "human" | "zed";
+    zedLevel?: 1 | 2 | 3 | 4;
+    zedKills?: number;
+    clothes?: string;
+    entered?: string[];
+    humans?: unknown[];
     zeds?: { id: number; x: number; y: number; hp: number; alive: boolean; inside: string | null }[];
     drops?: { id: number; x: number; y: number; slot: Slot; inside: string | null }[];
   },
@@ -1408,9 +1813,18 @@ export function applySave(
       c.y = saved.y;
       c.ang = saved.ang;
       c.gas = saved.gas;
+      if (saved.hp != null) c.hp = saved.hp;
+      if (saved.wrecked != null) c.wrecked = saved.wrecked;
+      if (saved.npc != null) c.npc = saved.npc;
     }
   }
   s.carId = data.carId ?? null;
+  s.player.form = data.form ?? "human";
+  s.player.zedLevel = data.zedLevel ?? 1;
+  s.player.zedKills = data.zedKills ?? 0;
+  s.player.clothes = data.clothes ?? "";
+  s.entered = new Set(data.entered ?? []);
+  if (data.humans?.length) s.world.humans = data.humans as Human[];
   if (data.zeds) {
     for (const z of s.world.zombies) {
       const saved = data.zeds.find((x) => x.id === z.id);

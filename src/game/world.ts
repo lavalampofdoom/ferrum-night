@@ -91,6 +91,30 @@ export type Car = {
   ang: number;
   gas: number;
   color: number;
+  hp: number;
+  wrecked: boolean;
+  npc: boolean;
+};
+
+export type HumanRole = "flee" | "hide" | "drive" | "follow" | "minion";
+
+export type Human = {
+  id: number;
+  name: string;
+  x: number;
+  y: number;
+  facing: number;
+  walk: number;
+  hp: number;
+  alive: boolean;
+  role: HumanRole;
+  hideId: string | null;
+  carId: number | null;
+  follow: boolean;
+  weapon: string;
+  armor: string;
+  clothes: string;
+  inside: string | null;
 };
 
 export type CritterKind = "doe" | "buck" | "fawn" | "bear" | "cub" | "turkey" | "squirrel";
@@ -141,6 +165,7 @@ export type World = {
   trees: Tree[];
   props: Prop[];
   zombies: Zombie[];
+  humans: Human[];
   critters: Critter[];
   cars: Car[];
   startX: number;
@@ -420,6 +445,7 @@ export function generateWorld(seed = 40): World {
   });
   const critters = spawnWildlife(rng, blocked, tiles, seed);
   const cars = spawnCars(rng, tiles, buildings, blocked);
+  const humans = spawnHumans(rng, buildings, cars);
   return {
     tiles,
     blocked,
@@ -428,6 +454,7 @@ export function generateWorld(seed = 40): World {
     trees,
     props,
     zombies,
+    humans,
     critters,
     cars,
     startX,
@@ -689,6 +716,9 @@ function spawnCars(
       ang: rng() * Math.PI * 2,
       gas: 70 + rng() * 50,
       color: Math.floor(rng() * 5),
+      hp: 100,
+      wrecked: false,
+      npc: false,
     });
   };
 
@@ -713,6 +743,50 @@ function spawnCars(
     if (t === T.ASPHALT || t === T.LINE || t === T.PARKING || t === T.DIRT) add(x, y);
   }
   return cars;
+}
+
+
+const NAMES = [
+  "Dale", "June", "Wade", "Rita", "Clay", "Bess", "Hank", "Nell", "Otis", "Mae",
+  "Earl", "Tessa", "Buck", "Lila", "Gus", "Pam",
+];
+
+function spawnHumans(rng: () => number, buildings: Building[], cars: Car[]): Human[] {
+  const humans: Human[] = [];
+  const houses = buildings.filter((b) => b.kind === "house" || b.kind === "ranch");
+  const n = 10 + Math.floor(rng() * 6);
+  for (let i = 0; i < n; i++) {
+    const roll = rng();
+    const role: HumanRole = roll < 0.45 ? "flee" : roll < 0.75 ? "hide" : "drive";
+    const house = houses[Math.floor(rng() * Math.max(1, houses.length))];
+    const car = cars[Math.floor(rng() * Math.max(1, cars.length))];
+    const x = house ? house.doorX + (rng() - 0.5) * 80 : 400 + rng() * 200;
+    const y = house ? house.doorY + 20 + rng() * 40 : 400 + rng() * 200;
+    let carId: number | null = null;
+    if (role === "drive" && car && !car.npc) {
+      car.npc = true;
+      carId = car.id;
+    }
+    humans.push({
+      id: i + 1,
+      name: NAMES[i % NAMES.length]!,
+      x,
+      y,
+      facing: Math.floor(rng() * 4),
+      walk: 0,
+      hp: 70 + Math.floor(rng() * 30),
+      alive: true,
+      role,
+      hideId: role === "hide" && house ? house.id : null,
+      carId,
+      follow: false,
+      weapon: rng() < 0.2 ? "bat" : "fists",
+      armor: "",
+      clothes: rng() < 0.5 ? "hoodie" : rng() < 0.5 ? "jacket" : "flannel",
+      inside: null,
+    });
+  }
+  return humans;
 }
 
 export function blockedAt(blocked: Uint8Array, x: number, y: number, w = W): boolean {
