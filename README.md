@@ -1,6 +1,6 @@
 # Ferrum Night
 
-Free browser zombie survival set on real Franklin County, Virginia pavement — Ferrum College, 180 Ferrum Mountain Road, VA-40, and Rocky Mount.
+Free browser zombie survival set on a geographically exact replica of Ferrum, Virginia — Ferrum College, 180 Ferrum Mountain Road, Franklin Street, and the surrounding farms.
 
 **Play:** [https://lavalampofdoom.github.io/ferrum-night/](https://lavalampofdoom.github.io/ferrum-night/)
 

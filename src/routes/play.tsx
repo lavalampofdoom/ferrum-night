@@ -7,7 +7,7 @@ import { PlayLock } from "@/components/play-lock";
 export const Route = createFileRoute("/play")({
   head: () => ({
     meta: [
-      { title: "Play Ferrum Night — Ferrum to Rocky Mount, VA" },
+      { title: "Play Ferrum Night — Ferrum, VA" },
       {
         name: "description",
         content:

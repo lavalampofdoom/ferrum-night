@@ -8,12 +8,12 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Play Ferrum Night free in any browser. Top-down zombie survival from Ferrum College and 180 Ferrum Mountain Road along VA-40 to Rocky Mount, Franklin County, Virginia. Searchable map, loot, and crafting.",
+          "Play Ferrum Night free in any browser. Top-down zombie survival on a geographically exact replica of Ferrum, Virginia. Searchable map, loot, and crafting.",
       },
       {
         name: "keywords",
         content:
-          "Ferrum Night, Ferrum Virginia, Rocky Mount VA, Franklin County, Ferrum College, zombie survival, free browser game, VA-40, Fairy Stone, play online",
+          "Ferrum Night, Ferrum Virginia, Franklin County, Ferrum College, zombie survival, free browser game, VA-40, play online",
       },
       { name: "robots", content: "index, follow" },
     ],

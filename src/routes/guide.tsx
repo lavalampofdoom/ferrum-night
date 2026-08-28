@@ -15,7 +15,7 @@ export const Route = createFileRoute("/guide")({
       {
         name: "description",
         content:
-          "Searchable field guide for Ferrum Night: Ferrum College, Tri-Area clinic, VA-40, Rocky Mount courthouse, KFC, Lowe's, crafting, and keyboard controls.",
+          "Searchable field guide for Ferrum Night: Ferrum College, Tri-Area clinic, Franklin Street, loot, crafting, and keyboard controls.",
       },
     ],
   }),
