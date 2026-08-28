@@ -1,12 +1,12 @@
 export const TILE = 32;
-export const MAP_W = 400;
-export const MAP_H = 260;
+export const MAP_W = 640;
+export const MAP_H = 420;
 
-/** Geographic bounds covering Fairy Stone Park Rd through Rocky Mount. */
-export const WEST = -80.12;
-export const EAST = -79.84;
-export const SOUTH = 36.875;
-export const NORTH = 37.035;
+/** Ferrum CDP (OSM relation 207060). ~5.7 mi east–west, ~3.8 mi north–south. */
+export const WEST = -80.06346;
+export const EAST = -79.96096;
+export const SOUTH = 36.90046;
+export const NORTH = 36.95598;
 
 export const VIEW_TILES_X = 17;
 export const FIXED_DT = 1 / 60;
