@@ -1,6 +1,6 @@
 import type { Slot } from "./items";
 
-export const SAVE_VERSION = 7;
+export const SAVE_VERSION = 8;
 const KEY = "ferrum-night-save";
 const BACK = "ferrum-night-save-bak";
 
@@ -22,8 +22,14 @@ export type SaveData = {
   interior: string | null;
   doors?: Record<string, { locked: boolean; broken: boolean; hp: number }>;
   benches?: Record<string, { x: number; y: number }[]>;
-  cars?: { id: number; x: number; y: number; ang: number; gas: number }[];
+  cars?: { id: number; x: number; y: number; ang: number; gas: number; hp?: number; wrecked?: boolean; npc?: boolean }[];
   carId?: number | null;
+  form?: "human" | "zed";
+  zedLevel?: 1 | 2 | 3 | 4;
+  zedKills?: number;
+  clothes?: string;
+  entered?: string[];
+  humans?: unknown[];
   zeds?: { id: number; x: number; y: number; hp: number; alive: boolean; inside: string | null }[];
   drops?: { id: number; x: number; y: number; slot: Slot; inside: string | null }[];
 };

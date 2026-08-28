@@ -63,6 +63,9 @@ export function GameApp() {
         onDrop={(i) => engineRef.current?.dropInv(i)}
         onTake={(i) => engineRef.current?.takeContainer(i)}
         onCloseLoot={() => engineRef.current?.closeLoot()}
+        onGive={(i) => engineRef.current?.giveInv(i)}
+        onAcceptTurn={() => engineRef.current?.acceptTurn()}
+        onRefuseTurn={() => engineRef.current?.refuseTurn()}
         onStick={(x, y) => engineRef.current?.setStick(x, y)}
         onAttack={(v) => engineRef.current?.setAttack(v)}
         onAct={(v) => engineRef.current?.setUse(v)}

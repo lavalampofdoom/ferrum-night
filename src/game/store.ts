@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Slot } from "./items";
 
-export type Screen = "title" | "play" | "pause" | "dead" | "turned";
+export type Screen = "title" | "play" | "pause" | "dead" | "turned" | "turn-choice";
 
 export type HudState = {
   screen: Screen;
@@ -24,6 +24,15 @@ export type HudState = {
   inCar: boolean;
   gas: number;
   gasMax: number;
+  form: "human" | "zed";
+  zedLevel: number;
+  offerTurn: boolean;
+  hpShow: boolean;
+  gasShow: boolean;
+  carShow: boolean;
+  infShow: boolean;
+  carHp: number;
+  followName: string;
   containerId: string | null;
   containerName: string;
   containerSlots: Slot[];
@@ -51,6 +60,15 @@ export const useHud = create<HudState>((set) => ({
   inCar: false,
   gas: 0,
   gasMax: 120,
+  form: "human",
+  zedLevel: 1,
+  offerTurn: false,
+  hpShow: false,
+  gasShow: false,
+  carShow: false,
+  infShow: false,
+  carHp: 100,
+  followName: "",
   containerId: null,
   containerName: "",
   containerSlots: [],
